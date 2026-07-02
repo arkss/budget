@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>자산 포트폴리오</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- Firebase (동기화용) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e6e9ef; --muted:#9aa3b2; --accent:#4f8cff; --green:#3ecf8e; --red:#ff6b6b;
+    --c1:#4f8cff; --c2:#3ecf8e; --c3:#ffb454; --c4:#c678dd; --c5:#56c8d8; --c6:#ff7a90;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Malgun Gothic",sans-serif;font-size:14px;line-height:1.5}
+  header{padding:22px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  h1{font-size:20px;margin:0;font-weight:700;letter-spacing:-.3px}
+  .sub{color:var(--muted);font-size:12px;margin-top:3px}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 28px 80px}
+  .tabs{display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap}
+  .tab{padding:9px 16px;border-radius:10px;background:var(--panel);color:var(--muted);cursor:pointer;border:1px solid transparent;font-weight:600;font-size:13px}
+  .tab.active{background:var(--accent);color:#fff}
+  .grid{display:grid;gap:16px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card .label{color:var(--muted);font-size:12px;font-weight:600}
+  .card .val{font-size:24px;font-weight:800;margin-top:6px;letter-spacing:-.5px}
+  .card .delta{font-size:12px;margin-top:4px;font-weight:600}
+  .up{color:var(--green)} .down{color:var(--red)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:16px}
+  .panel h2{font-size:15px;margin:0 0 16px;font-weight:700}
+  .chartbox{position:relative;height:340px}
+  .chartbox.sm{height:300px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:1}
+  th.cA,td.cA{text-align:left;position:sticky;left:84px;background:var(--panel);z-index:1}
+  thead th{color:var(--muted);font-weight:600;font-size:12px}
+  .tablescroll{overflow-x:auto}
+  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px;width:100%}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  button{cursor:pointer;border:none;border-radius:9px;padding:9px 16px;font-weight:700;font-size:13px}
+  .btn{background:var(--accent);color:#fff}
+  .btn-ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+  .btn-danger{background:transparent;color:var(--red);border:1px solid var(--line);padding:5px 10px;font-size:12px}
+  .btn-mini{background:var(--panel2);color:var(--txt);border:1px solid var(--line);padding:4px 8px;font-size:12px;line-height:1;border-radius:7px}
+  .btn-mini:hover{border-color:var(--accent)}
+  .catrow{display:flex;gap:6px;align-items:center;padding:3px 4px;border-radius:8px;border:1px solid transparent}
+  .catrow.over{border-top:2px solid var(--accent);background:rgba(79,140,255,.08)}
+  .drag{cursor:grab;user-select:none;color:var(--muted);font-size:16px;padding:0 6px;flex:none}
+  .drag:active{cursor:grabbing}
+  .formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end}
+  .field label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px;font-weight:600}
+  .row-actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+  .slider-row{display:flex;align-items:center;gap:14px;margin:14px 0}
+  .slider-row label{width:140px;color:var(--muted);font-weight:600;font-size:13px}
+  .slider-row input[type=range]{flex:1;accent-color:var(--accent)}
+  .slider-row .sv{width:120px;text-align:right;font-weight:700;font-size:14px}
+  .goalbar{height:26px;background:var(--panel2);border-radius:13px;overflow:hidden;margin:14px 0;border:1px solid var(--line)}
+  .goalbar .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));display:flex;align-items:center;justify-content:flex-end;padding-right:10px;color:#fff;font-weight:700;font-size:12px;transition:width .4s}
+  .hide{display:none}
+  .muted{color:var(--muted)}
+  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  .editcell{width:120px}
+  .pfbtns{display:flex;gap:6px;flex-wrap:wrap}
+  .pfbtn{padding:7px 14px;border-radius:9px;background:var(--panel);color:var(--muted);border:1px solid var(--line);font-weight:700;font-size:13px}
+  .pfbtn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .authoverlay{position:fixed;inset:0;background:rgba(15,17,21,.97);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;padding:28px;text-align:center}
+  @media(max-width:600px){.wrap{padding:16px}.card .val{font-size:20px}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>자산 포트폴리오</h1>
+    <div class="sub" id="headSub">자산 추이 · 목표 추적 · 복리 시뮬레이터</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button class="btn-ghost" id="unitBtn" onclick="toggleUnit()">단위: 원</button>
+    <button class="btn" onclick="saveToFile()">백업</button>
+    <button class="btn-ghost" onclick="openFromFile()">복원</button>
+    <input type="file" id="importFile" class="hide" accept="application/json" onchange="importData(this)">
+    <span id="authArea"></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- 포트폴리오 선택 -->
+  <div class="pfbtns" id="pfBtns" style="margin-bottom:14px"></div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="switchTab('overview')">대시보드</div>
+    <div class="tab" data-tab="trend" onclick="switchTab('trend')">자산 추이</div>
+    <div class="tab" data-tab="goal" onclick="switchTab('goal')">목표 추적</div>
+    <div class="tab" data-tab="sim" onclick="switchTab('sim')">복리 시뮬레이터</div>
+    <div class="tab" data-tab="edit" onclick="switchTab('edit')">입력 / 편집</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <section id="overview">
+    <div class="grid cards" id="kpis"></div>
+    <div class="panel">
+      <h2>총자산 추이</h2>
+      <div class="chartbox"><canvas id="ovChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>최근 자산 구성</h2>
+      <div class="chartbox sm"><canvas id="compChart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- TREND -->
+  <section id="trend" class="hide">
+    <div class="panel">
+      <h2>총자산 추이 (라인)</h2>
+      <div class="chartbox"><canvas id="trendLine"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>항목별 자산 구성 (누적 영역)</h2>
+      <div class="chartbox"><canvas id="stackArea"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>월별 자산 증가액</h2>
+      <div class="chartbox"><canvas id="deltaBar"></canvas></div>
+    </div>
+  </section>
+
+  <!-- GOAL -->
+  <section id="goal" class="hide">
+    <div class="panel">
+      <h2>목표 설정</h2>
+      <div class="formgrid">
+        <div class="field"><label id="goalAmtLabel">목표 자산 (원)</label><input inputmode="numeric" id="goalAmount" oninput="fmtComma(this);renderGoal();save()"></div>
+        <div class="field"><label>목표 나이</label><input type="number" id="goalAge" oninput="renderGoal();save()"></div>
+        <div class="field"><label>현재 나이</label><input type="number" id="curAge" oninput="renderGoal();save()"></div>
+        <div class="field"><label id="goalContribLabel">연 저축액 (원)</label><input inputmode="numeric" id="goalContrib" oninput="fmtComma(this);renderGoal();save()"></div>
+      </div>
+      <div class="goalbar"><div class="fill" id="goalFill">0%</div></div>
+      <div id="goalText" class="hint"></div>
+    </div>
+    <div class="panel">
+      <h2>목표까지 필요 추이</h2>
+      <div class="chartbox"><canvas id="goalChart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- SIM -->
+  <section id="sim" class="hide">
+    <div class="panel">
+      <h2>복리 시뮬레이터</h2>
+      <div class="slider-row"><label>시작 시드 (원)</label><input type="range" id="sSeed" min="0" max="200000000" step="1000000" oninput="renderSim();save()"><div class="sv" id="sSeedV"></div></div>
+      <div class="slider-row"><label>연 수익률 (%)</label><input type="range" id="sRate" min="0" max="20" step="0.5" oninput="renderSim();save()"><div class="sv" id="sRateV"></div></div>
+      <div class="slider-row"><label>연 추가납입 (원)</label><input type="range" id="sContrib" min="0" max="50000000" step="1000000" oninput="renderSim();save()"><div class="sv" id="sContribV"></div></div>
+      <div class="slider-row"><label>시작 나이</label><input type="range" id="sStart" min="25" max="50" step="1" oninput="renderSim();save()"><div class="sv" id="sStartV"></div></div>
+      <div class="slider-row"><label>종료 나이</label><input type="range" id="sEnd" min="30" max="70" step="1" oninput="renderSim();save()"><div class="sv" id="sEndV"></div></div>
+      <div class="grid cards" id="simKpis" style="margin-top:10px"></div>
+    </div>
+    <div class="panel">
+      <h2>예상 자산 성장</h2>
+      <div class="chartbox"><canvas id="simChart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- EDIT -->
+  <section id="edit" class="hide">
+    <div class="panel">
+      <h2>항목 관리</h2>
+      <div class="grid" id="catManager" style="gap:8px;max-width:560px"></div>
+      <div class="row-actions">
+        <select id="newCatSign" style="max-width:110px"><option value="+">＋ 자산</option><option value="-">− 부채</option></select>
+        <input id="newCatName" placeholder="새 항목 이름 (예: 코인, 대출)" style="max-width:240px" onkeydown="if(event.key==='Enter')addCat()">
+        <button class="btn" onclick="addCat()">항목 추가</button>
+      </div>
+      <div class="hint">⠿ 핸들을 드래그해 순서 변경(같은 그룹 안에서), ＋/− 버튼으로 자산↔부채 전환. 부채 항목은 총자산 자동합산에서 차감됩니다. 이름 변경·삭제는 모든 기록에 반영됩니다.</div>
+    </div>
+    <div class="panel">
+      <h2>새 기록 추가</h2>
+      <div class="formgrid" id="addForm"></div>
+      <div class="row-actions">
+        <button class="btn" onclick="addRecord()">추가</button>
+        <button class="btn-ghost" onclick="fillLast()">직전 값 불러오기</button>
+        <button class="btn-ghost" onclick="resetSeed()">샘플 데이터로 초기화</button>
+      </div>
+      <div class="hint">"직전 값 불러오기"로 마지막 기록을 채운 뒤 바뀐 항목만 수정하세요. 총자산을 비우면 항목 합계(부채 차감)로 자동 계산됩니다. 금액은 원 단위, 콤마 자동 표시.</div>
+    </div>
+    <div class="panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+        <h2 style="margin:0">전체 기록 (클릭해서 수정)</h2>
+        <button class="btn-danger" onclick="clearAll()">전체 삭제</button>
+      </div>
+      <div class="tablescroll"><table id="editTable"></table></div>
+    </div>
+  </section>
+</div>
+
+<!-- 로그인 오버레이 -->
+<div id="authOverlay" class="authoverlay hide">
+  <h1 style="margin:0">자산 포트폴리오</h1>
+  <div class="muted" style="max-width:340px">둘이 함께 쓰려면 로그인하세요.<br>허용된 계정만 데이터를 보고 편집할 수 있습니다.</div>
+  <button class="btn" onclick="doLogin()">Google 계정으로 로그인</button>
+  <div id="authMsg" class="muted" style="font-size:12px;max-width:340px"></div>
+</div>
+
+<script>
+/* =========================================================
+   Firebase 설정 — 아래 4개 값을 본인 프로젝트 값으로 교체하세요.
+   (설치가이드 참고. 이 값들은 공개돼도 안전합니다 — 보안은 로그인 + 규칙으로 처리)
+   ========================================================= */
+const firebaseConfig = {
+  apiKey:     "AIzaSyCqBQeUaKQCltDpm99IJBfRktAmvYQE2m8",
+  authDomain: "our-budget-98c9f.firebaseapp.com",
+  projectId:  "our-budget-98c9f",
+  appId:      "1:166471108955:web:5481bf068bd36b9721327e"
+};
+// config가 안 채워졌으면 오프라인(localStorage) 모드로 동작
+const CLOUD_ON = !/PASTE_/.test(firebaseConfig.apiKey) && (typeof firebase !== "undefined");
+
+/* ---------- 포트폴리오 (공동 / 개인 A / 개인 B) ---------- */
+const PF_IDS = ["shared","a","b"];
+const DEFAULT_LABELS = {shared:"공동", a:"개인 A", b:"개인 B"};
+let LABELS = loadLabels();
+let PF = localStorage.getItem("pf_current") || "shared";
+function loadLabels(){ try{const s=localStorage.getItem("pf_labels"); if(s) return Object.assign({},DEFAULT_LABELS,JSON.parse(s));}catch(e){} return Object.assign({},DEFAULT_LABELS); }
+function saveLabelsLocal(){ localStorage.setItem("pf_labels", JSON.stringify(LABELS)); }
+
+const DEFAULT_CATS = ["주식계좌","청약통장","현금","비상금","적금","신용대출"];
+const PALETTE = ["#4f8cff","#3ecf8e","#ffb454","#c678dd","#56c8d8","#ff7a90","#f5a97f","#8bd5ca","#a6da95","#eed49f"];
+let CATS = DEFAULT_CATS.slice();
+let SIGN = {"신용대출":-1};
+function saveCats(){ localStorage.setItem("pf_cats", JSON.stringify(CATS)); }
+function saveSign(){ localStorage.setItem("pf_sign", JSON.stringify(SIGN)); }
+function signOf(c){ return SIGN[c]===-1 ? -1 : 1; }
+function catOrder(){ const idx=CATS.map((c,i)=>i); return idx.filter(i=>signOf(CATS[i])>0).concat(idx.filter(i=>signOf(CATS[i])<0)); }
+function catsFromRecords(arr){ const out=[]; (arr||[]).forEach(r=>Object.keys(r).forEach(k=>{ if(k!=="period"&&k!=="총 자산"&&!out.includes(k)) out.push(k); })); return out; }
+function guessSign(c){ return /(대출|부채|융자|빚|전세금)/.test(c) ? -1 : 1; }
+function syncCatsFromData(){
+  const found=catsFromRecords(data);
+  if(!found.length) return;
+  CATS=found;
+  found.forEach(c=>{ if(SIGN[c]===undefined) SIGN[c]=guessSign(c); });
+  Object.keys(SIGN).forEach(k=>{ if(!found.includes(k)) delete SIGN[k]; });
+  saveCats(); saveSign();
+}
+function colorOf(i){ return PALETTE[((i%PALETTE.length)+PALETTE.length)%PALETTE.length]; }
+const comma = n => Number(n||0).toLocaleString("en-US");
+let UNIT = localStorage.getItem("pf_unit")||"won";
+function unitDiv(){ return UNIT==="manwon"?10000:1; }
+function unitLabel(){ return UNIT==="manwon"?"만원":"원"; }
+function toggleUnit(){ UNIT = UNIT==="won"?"manwon":"won"; localStorage.setItem("pf_unit",UNIT); syncGoalField(); renderAll(); updateUnitBtn(); save(); toast("단위: "+unitLabel()); }
+function updateUnitBtn(){ const b=document.getElementById("unitBtn"); if(b) b.textContent="단위: "+unitLabel(); }
+function parseNum(v){ if(v==null) return 0; const n=+String(v).replace(/[^0-9.\-]/g,""); return isNaN(n)?0:n; }
+function parseToWon(v){ return Math.round(parseNum(v)*unitDiv()); }
+function commaUnit(n){ return ((n||0)/unitDiv()).toLocaleString("en-US",{maximumFractionDigits:4}); }
+function fmtComma(el){
+  const neg=el.value.trim().startsWith("-");
+  let raw=el.value.replace(/[^0-9.]/g,"");
+  const dot=raw.indexOf(".");
+  let intP, decP="";
+  if(dot>=0){ intP=raw.slice(0,dot).replace(/\D/g,""); decP="."+raw.slice(dot+1).replace(/\./g,"").slice(0,4); }
+  else intP=raw.replace(/\D/g,"");
+  const intF=intP? Number(intP).toLocaleString("en-US") : (decP?"0":"");
+  el.value=(neg?"-":"")+intF+decP;
+}
+
+// 샘플 데이터 (공동 포트폴리오 최초 실행 시 예시)
+const SEED = [
+  {"period":"2025.01.01","주식계좌":10000000,"청약통장":3000000,"현금":2000000,"비상금":5000000,"적금":4000000,"신용대출":10000000,"총 자산":14000000},
+  {"period":"2025.04.01","주식계좌":13000000,"청약통장":3300000,"현금":2500000,"비상금":5000000,"적금":6000000,"신용대출":9000000,"총 자산":20800000},
+  {"period":"2025.07.01","주식계좌":16000000,"청약통장":3600000,"현금":3000000,"비상금":6000000,"적금":8000000,"신용대출":8000000,"총 자산":28600000}
+];
+
+let data = [];
+let GOAL_WON = 100000000;
+let GOAL_CONTRIB_WON = 12000000;
+
+function sumCats(r){ r=r||{}; return CATS.reduce((a,c)=>a+signOf(c)*(r[c]||0),0); }
+function totalOf(r){ r=r||{}; return (r["총 자산"]!=null) ? r["총 자산"] : sumCats(r); }
+const won = n => (n==null?"-":Math.round(n).toLocaleString("ko-KR")+"원");
+const eok = n => (n/100000000).toFixed(2)+"억";
+const man = n => (n==null?"-":Math.round(n/10000).toLocaleString("ko-KR")+"만원");
+
+let charts = {};
+function destroy(id){ if(charts[id]){ charts[id].destroy(); delete charts[id]; } }
+
+function switchTab(t){
+  document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
+  ["overview","trend","goal","sim","edit"].forEach(s=>document.getElementById(s).classList.toggle("hide",s!==t));
+  renderAll();
+}
+
+/* ---------- KPIs + overview ---------- */
+function renderKPIs(){
+  if(data.length===0){
+    document.getElementById("kpis").innerHTML = kpi("기록 없음","-","입력/편집 탭에서 추가하세요");
+    return;
+  }
+  const last = data[data.length-1], prev = data[data.length-2]||last;
+  const lt = totalOf(last), pt = totalOf(prev);
+  const delta = lt-pt, pct = pt? (delta/pt*100):0;
+  const first = data[0]; const grow = totalOf(last)-totalOf(first);
+  const stockCats = CATS.filter(c=>c.includes("주식"));
+  const invVal = stockCats.reduce((a,c)=>a+(last[c]||0),0);
+  const invSub = stockCats.length>1 ? stockCats.join(" + ") : null;
+  const html = [
+    kpi("최근 총자산", eok(lt), won(lt)),
+    kpi("최근 변동", (delta>=0?"+":"")+man(delta), (pct>=0?"+":"")+pct.toFixed(1)+"%", delta>=0),
+    kpi("주식", man(invVal), invSub||won(invVal)),
+    kpi("누적 증가", "+"+man(grow), data[0].period+" 대비", true),
+  ].join("");
+  document.getElementById("kpis").innerHTML = html;
+}
+function kpi(label,val,delta,up){
+  let d = delta? `<div class="delta ${up===undefined?'muted':(up?'up':'down')}">${delta}</div>`:"";
+  return `<div class="card"><div class="label">${label}</div><div class="val">${val}</div>${d}</div>`;
+}
+
+function renderOverview(){
+  renderKPIs();
+  destroy("ovChart");
+  charts.ovChart = new Chart(document.getElementById("ovChart"),{
+    type:"line",
+    data:{labels:data.map(r=>r.period),datasets:[{label:"총자산",data:data.map(totalOf),borderColor:"#4f8cff",backgroundColor:"rgba(79,140,255,.12)",fill:true,tension:.25,pointRadius:2,borderWidth:2}]},
+    options:baseOpts()
+  });
+  const last=data[data.length-1]||{};
+  destroy("compChart");
+  const cats=CATS.filter(c=>signOf(c)>0 && (last[c]||0)>0);
+  charts.compChart=new Chart(document.getElementById("compChart"),{
+    type:"doughnut",
+    data:{labels:cats,datasets:[{data:cats.map(c=>last[c]),backgroundColor:cats.map(c=>colorOf(CATS.indexOf(c))),borderColor:"#171a21",borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"right",labels:{color:"#9aa3b2"}},tooltip:{callbacks:{label:ctx=>ctx.label+": "+won(ctx.raw)}}}}
+  });
+}
+
+/* ---------- trend ---------- */
+function renderTrend(){
+  destroy("trendLine");
+  charts.trendLine=new Chart(document.getElementById("trendLine"),{
+    type:"line",
+    data:{labels:data.map(r=>r.period),datasets:[{label:"총자산",data:data.map(totalOf),borderColor:"#4f8cff",backgroundColor:"rgba(79,140,255,.1)",fill:true,tension:.25,pointRadius:2,borderWidth:2}]},
+    options:baseOpts()
+  });
+  destroy("stackArea");
+  charts.stackArea=new Chart(document.getElementById("stackArea"),{
+    type:"line",
+    data:{labels:data.map(r=>r.period),datasets:CATS.map((c,i)=>({label:(signOf(c)<0?"− ":"")+c,data:data.map(r=>signOf(c)*(r[c]||0)),borderColor:colorOf(i),backgroundColor:colorOf(i)+"55",fill:true,tension:.2,pointRadius:0,borderWidth:1}))},
+    options:Object.assign(baseOpts(),{scales:{x:{stacked:true,ticks:{color:"#9aa3b2",maxRotation:60},grid:{color:"#2a2f3a"}},y:{stacked:true,ticks:{color:"#9aa3b2",callback:v=>eok(v)},grid:{color:"#2a2f3a"}}},plugins:{legend:{labels:{color:"#9aa3b2"}}}})
+  });
+  destroy("deltaBar");
+  const deltas=data.map((r,i)=> i===0?0: totalOf(r)-totalOf(data[i-1]));
+  charts.deltaBar=new Chart(document.getElementById("deltaBar"),{
+    type:"bar",
+    data:{labels:data.map(r=>r.period),datasets:[{label:"증가액",data:deltas,backgroundColor:deltas.map(d=>d>=0?"#3ecf8e":"#ff6b6b")}]},
+    options:Object.assign(baseOpts(),{plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>won(ctx.raw)}}}})
+  });
+}
+
+function baseOpts(){
+  return {responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:"#9aa3b2"}},tooltip:{callbacks:{label:ctx=>(ctx.dataset.label||"")+": "+won(ctx.raw)}}},
+    scales:{x:{ticks:{color:"#9aa3b2",maxRotation:60},grid:{color:"#2a2f3a"}},y:{ticks:{color:"#9aa3b2",callback:v=>eok(v)},grid:{color:"#2a2f3a"}}}};
+}
+
+/* ---------- goal ---------- */
+function syncGoalField(){
+  const el=document.getElementById("goalAmount"); if(el) el.value=commaUnit(GOAL_WON);
+  const lb=document.getElementById("goalAmtLabel"); if(lb) lb.textContent="목표 자산 ("+unitLabel()+")";
+  const ce=document.getElementById("goalContrib"); if(ce) ce.value=commaUnit(GOAL_CONTRIB_WON);
+  const cl=document.getElementById("goalContribLabel"); if(cl) cl.textContent="연 저축액 ("+unitLabel()+")";
+}
+function solveRate(cur,goal,years,contrib){
+  if(years<=0) return 0;
+  const fv=r=>{let b=cur;for(let y=0;y<years;y++)b=b*(1+r)+contrib;return b;};
+  let lo=-0.99, hi=1.0;
+  if(fv(hi)<goal) return hi;
+  if(fv(lo)>goal) return lo;
+  for(let k=0;k<200;k++){const mid=(lo+hi)/2; if(fv(mid)<goal) lo=mid; else hi=mid;}
+  return (lo+hi)/2;
+}
+function renderGoal(){
+  GOAL_WON=parseToWon(document.getElementById("goalAmount").value);
+  GOAL_CONTRIB_WON=parseToWon(document.getElementById("goalContrib").value);
+  const g=GOAL_WON, contrib=GOAL_CONTRIB_WON;
+  const gAge=+document.getElementById("goalAge").value||50;
+  const cAge=+document.getElementById("curAge").value||30;
+  localStorage.setItem("pf_goal",JSON.stringify({g,gAge,cAge,contrib}));
+  const cur=totalOf(data[data.length-1]);
+  const pct=g?Math.min(100,cur/g*100):0;
+  const fill=document.getElementById("goalFill");
+  fill.style.width=pct.toFixed(1)+"%"; fill.textContent=pct.toFixed(1)+"%";
+  const years=Math.max(0,gAge-cAge);
+  const need=Math.max(0,g-cur);
+  const rWithSave=(years>0&&cur>0)? solveRate(cur,g,years,contrib)*100 : 0;
+  const rNoSave  =(years>0&&cur>0)? (Math.pow(g/cur,1/years)-1)*100 : 0;
+  const saveTotal=contrib*years;
+  document.getElementById("goalText").innerHTML=
+    `목표 <b>${eok(g)}</b> 중 현재 <b>${eok(cur)}</b> 달성, 남은 금액 <b>${won(need)}</b> · 기간 <b>${years}년</b>.<br>`+
+    `매년 <b>${won(contrib)}</b> 저축(누적 ${eok(saveTotal)})한다면 필요 투자수익률은 <b style="color:var(--green)">연 ${rWithSave.toFixed(1)}%</b>.<br>`+
+    `<span class="muted">참고: 저축 없이 현재 자산만 굴린다면 연 ${rNoSave.toFixed(1)}% 필요.</span>`;
+  destroy("goalChart");
+  const labels=[],proj=[],contribOnly=[];
+  let b=cur, p=cur;
+  for(let y=0;y<=years;y++){
+    labels.push((cAge+y)+"세");
+    proj.push(b);
+    contribOnly.push(p);
+    b=b*(1+rWithSave/100)+contrib;
+    p=p+contrib;
+  }
+  charts.goalChart=new Chart(document.getElementById("goalChart"),{
+    type:"line",
+    data:{labels,datasets:[
+      {label:"목표 경로(저축+수익)",data:proj,borderColor:"#3ecf8e",backgroundColor:"rgba(62,207,142,.1)",fill:true,tension:.2,pointRadius:2,borderWidth:2},
+      {label:"저축만(무수익)",data:contribOnly,borderColor:"#56c8d8",borderDash:[4,4],pointRadius:0,borderWidth:1.5,fill:false},
+      {label:"목표선",data:labels.map(()=>g),borderColor:"#ff6b6b",borderDash:[6,6],pointRadius:0,borderWidth:1}
+    ]},
+    options:baseOpts()
+  });
+}
+
+/* ---------- sim ---------- */
+function renderSim(){
+  const seed=+sSeed.value, rate=+sRate.value, contrib=+sContrib.value, start=+sStart.value;
+  let end=+sEnd.value; if(end<start) end=start;
+  sSeedV.textContent=eok(seed); sRateV.textContent=rate+"%"; sContribV.textContent=eok(contrib);
+  sStartV.textContent=start+"세"; sEndV.textContent=end+"세";
+  const labels=[],vals=[]; let bal=seed;
+  for(let a=start;a<=end;a++){
+    labels.push(a+"세"); vals.push(Math.round(bal));
+    bal=bal*(1+rate/100)+contrib;
+  }
+  const final=vals[vals.length-1]||seed;
+  const principal=seed+contrib*(end-start);
+  const investGain=final-principal;
+  document.getElementById("simKpis").innerHTML=[
+    kpi(end+"세 예상 자산",eok(final),won(final)),
+    kpi("총 납입원금",eok(principal),null),
+    kpi("투자수익(복리)","+"+eok(investGain),null,true),
+  ].join("");
+  destroy("simChart");
+  charts.simChart=new Chart(document.getElementById("simChart"),{
+    type:"line",
+    data:{labels,datasets:[{label:"예상 자산",data:vals,borderColor:"#ffb454",backgroundColor:"rgba(255,180,84,.12)",fill:true,tension:.2,pointRadius:2,borderWidth:2}]},
+    options:baseOpts()
+  });
+  localStorage.setItem("pf_sim",JSON.stringify({seed,rate,contrib,start,end:+sEnd.value}));
+}
+
+/* ---------- 항목 관리 ---------- */
+function renderCatManager(){
+  const box=document.getElementById("catManager");
+  if(!box) return;
+  const rowHtml=(c,i)=>`<div class="catrow" data-i="${i}"
+      ondragover="catDragOver(event,${i})" ondragleave="catDragLeave(${i})" ondrop="catDrop(event,${i})">
+      <span class="drag" draggable="true" title="드래그해서 순서 변경"
+        ondragstart="catDragStart(event,${i})" ondragend="catDragEnd()">⠿</span>
+      <span style="width:14px;height:14px;border-radius:4px;flex:none;background:${colorOf(i)}"></span>
+      <input value="${c.replace(/"/g,'&quot;')}" onchange="renameCat(${i},this.value)" style="flex:1">
+      <button class="btn-mini" title="자산↔부채 전환" onclick="toggleSign(${i})">${signOf(c)<0?'−':'＋'}</button>
+      <button class="btn-danger" onclick="delCat(${i})">삭제</button>
+    </div>`;
+  const idx=CATS.map((c,i)=>i);
+  const plus=idx.filter(i=>signOf(CATS[i])>0), minus=idx.filter(i=>signOf(CATS[i])<0);
+  const sec=(title,arr,empty)=> `<div style="font-weight:700;color:var(--muted);font-size:12px;margin:4px 0">${title}</div>`+
+    (arr.length? arr.map(i=>rowHtml(CATS[i],i)).join("") : `<div class="hint" style="margin:0 0 6px">${empty}</div>`);
+  box.innerHTML = sec("＋ 항목 (자산)",plus,"자산 항목 없음")
+    + `<div style="height:10px"></div>` + sec("− 항목 (부채/차감)",minus,"부채 항목 없음");
+}
+let _dragCat=null;
+function catDragStart(e,i){ _dragCat=i; e.dataTransfer.effectAllowed="move"; }
+function catDragEnd(){ _dragCat=null; document.querySelectorAll(".catrow.over").forEach(el=>el.classList.remove("over")); }
+function catDragOver(e,i){
+  if(_dragCat===null||signOf(CATS[_dragCat])!==signOf(CATS[i])) return;
+  e.preventDefault(); e.dataTransfer.dropEffect="move";
+  const el=e.currentTarget; if(!el.classList.contains("over")) el.classList.add("over");
+}
+function catDragLeave(i){ const el=document.querySelector(`.catrow[data-i="${i}"]`); if(el) el.classList.remove("over"); }
+function catDrop(e,target){
+  e.preventDefault();
+  if(_dragCat===null||_dragCat===target) { catDragEnd(); return; }
+  if(signOf(CATS[_dragCat])!==signOf(CATS[target])) { catDragEnd(); return; }
+  const moving=CATS[_dragCat], tName=CATS[target];
+  CATS.splice(_dragCat,1);
+  CATS.splice(CATS.indexOf(tName),0,moving);
+  _dragCat=null; saveCats(); save(); renderAll();
+}
+function toggleSign(i){ const c=CATS[i]; SIGN[c]=signOf(c)>0?-1:1; saveSign(); save(); renderAll(); }
+function addCat(){
+  const inp=document.getElementById("newCatName");
+  const name=inp.value.trim();
+  if(!name){alert("항목 이름을 입력하세요");return;}
+  if(CATS.includes(name)){alert("이미 있는 항목입니다");return;}
+  const sign=document.getElementById("newCatSign").value==="-"?-1:1;
+  CATS.push(name); SIGN[name]=sign; saveCats(); saveSign();
+  data.forEach(r=>{ if(r[name]==null) r[name]=0; });
+  save(); inp.value=""; renderAll();
+}
+function renameCat(i,nv){
+  nv=nv.trim(); const old=CATS[i];
+  if(!nv||nv===old){ renderCatManager(); return; }
+  if(CATS.includes(nv)){ alert("이미 있는 항목입니다"); renderCatManager(); return; }
+  CATS[i]=nv; SIGN[nv]=signOf(old); delete SIGN[old]; saveCats(); saveSign();
+  data.forEach(r=>{ if(old in r){ r[nv]=r[old]; delete r[old]; } });
+  save(); renderAll();
+}
+function delCat(i){
+  const c=CATS[i];
+  if(!confirm(`'${c}' 항목을 삭제할까요? 모든 기록에서 이 값이 사라집니다.`)) return;
+  CATS.splice(i,1); delete SIGN[c]; saveCats(); saveSign();
+  data.forEach(r=>{ delete r[c]; });
+  save(); renderAll();
+}
+
+/* ---------- edit ---------- */
+function renderAddForm(){
+  const f=document.getElementById("addForm");
+  const u=unitLabel();
+  let h=`<div class="field"><label>기간 (예: 2026.06.25)</label><input id="nf_period"></div>`;
+  catOrder().forEach(i=>{const c=CATS[i];h+=`<div class="field"><label>${signOf(c)<0?'− ':''}${c} (${u})</label><input inputmode="numeric" id="nf_${i}" oninput="fmtComma(this)"></div>`;});
+  h+=`<div class="field"><label>총 자산 (${u}, 선택)</label><input inputmode="numeric" id="nf_total" oninput="fmtComma(this)" placeholder="비우면 자동합산"></div>`;
+  f.innerHTML=h;
+}
+function fillLast(){
+  if(data.length===0){ alert("불러올 직전 기록이 없습니다"); return; }
+  const last=data[data.length-1];
+  CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el) el.value=commaUnit(last[c]||0); });
+  const t=document.getElementById("nf_total"); if(t) t.value=last["총 자산"]!=null?commaUnit(last["총 자산"]):"";
+  toast(`'${last.period}' 값을 불러왔습니다`);
+}
+function addRecord(){
+  const p=document.getElementById("nf_period").value.trim();
+  if(!p){alert("기간을 입력하세요");return;}
+  const r={period:p};
+  CATS.forEach((c,i)=>{const v=document.getElementById("nf_"+i).value; r[c]=v.trim()===""?0:parseToWon(v);});
+  const t=document.getElementById("nf_total").value;
+  r["총 자산"]= t.trim()===""? sumCats(r) : parseToWon(t);
+  data.push(r); save(); renderAll();
+}
+function renderEditTable(){
+  const t=document.getElementById("editTable");
+  const u=unitLabel();
+  const ord=catOrder();
+  let h="<thead><tr><th class=\"cP\">기간</th><th class=\"cA\"></th>"+ord.map(i=>{const c=CATS[i];return `<th>${signOf(c)<0?'− ':''}${c}<br><span class="muted" style="font-weight:400">(${u})</span></th>`;}).join("")+`<th>총 자산<br><span class="muted" style="font-weight:400">(${u})</span></th></tr></thead><tbody>`;
+  data.forEach((r,i)=>{
+    h+=`<tr><td class="cP">${r.period}</td>`;
+    h+=`<td class="cA"><button class="btn-danger" onclick="delRow(${i})">삭제</button></td>`;
+    ord.forEach(ci=>{const c=CATS[ci];h+=`<td><input class="editcell" inputmode="numeric" value="${commaUnit(r[c]||0)}" oninput="fmtComma(this);liveCell(${i},${ci},this.value)"></td>`;});
+    h+=`<td><input class="editcell" id="tot_${i}" inputmode="numeric" value="${commaUnit(totalOf(r))}" oninput="fmtComma(this);liveTotal(${i},this.value)"></td></tr>`;
+  });
+  h+="</tbody>";
+  t.innerHTML=h;
+}
+let _liveTmr;
+function liveCharts(){ clearTimeout(_liveTmr); _liveTmr=setTimeout(()=>{renderOverview();renderTrend();renderGoal();},220); }
+function liveCell(i,ci,v){
+  data[i][CATS[ci]] = v.trim()===""?0:parseToWon(v);
+  const tot=sumCats(data[i]); data[i]["총 자산"]=tot;
+  const te=document.getElementById("tot_"+i); if(te && document.activeElement!==te) te.value=commaUnit(tot);
+  save(); renderKPIs(); liveCharts();
+}
+function liveTotal(i,v){
+  data[i]["총 자산"] = v.trim()===""?0:parseToWon(v);
+  save(); renderKPIs(); liveCharts();
+}
+function delRow(i){ if(confirm("이 기록을 삭제할까요?")){ data.splice(i,1); save(); renderAll(); } }
+function clearAll(){
+  if(data.length===0){ alert("삭제할 기록이 없습니다"); return; }
+  if(confirm(`전체 기록 ${data.length}건을 모두 삭제할까요? 되돌릴 수 없습니다.`)){
+    data=[]; save(); renderAll(); toast("전체 기록을 삭제했습니다");
+  }
+}
+function resetSeed(){ if(confirm("샘플 데이터로 되돌릴까요? 현재 포트폴리오 내용이 사라집니다.")){ data=JSON.parse(JSON.stringify(SEED)); syncCatsFromData(); save(); renderAll(); } }
+
+/* ---------- 백업 파일 저장/복원 ---------- */
+let fileHandle = null;
+const fsSupported = ('showSaveFilePicker' in window);
+function currentSettings(){
+  let sim=null; try{sim=JSON.parse(localStorage.getItem("pf_sim"));}catch(e){}
+  return {
+    cats: CATS, signs: SIGN, unit: UNIT,
+    goal: { amount: GOAL_WON, contrib: GOAL_CONTRIB_WON,
+            goalAge: +document.getElementById("goalAge").value||50,
+            curAge: +document.getElementById("curAge").value||30 },
+    sim
+  };
+}
+function currentBundle(){ return { records: data, settings: currentSettings() }; }
+function buildSaveJSON(){ return JSON.stringify(currentBundle(), null, 2); }
+function applyLoaded(parsed){
+  let recs, s=null;
+  if(Array.isArray(parsed)) recs=parsed;
+  else if(parsed && Array.isArray(parsed.records)){ recs=parsed.records; s=parsed.settings||null; }
+  else throw new Error("형식 오류");
+  data=recs;
+  if(s){
+    if(Array.isArray(s.cats)&&s.cats.length){ CATS=s.cats; saveCats(); } else if(s.cats===undefined){ /* keep */ }
+    if(s.signs&&typeof s.signs==="object"){ SIGN=s.signs; saveSign(); }
+    if(!s.cats) syncCatsFromData();
+    if(s.unit){ UNIT=s.unit; localStorage.setItem("pf_unit",UNIT); }
+    if(s.goal){
+      if(s.goal.amount!=null) GOAL_WON=s.goal.amount;
+      if(s.goal.contrib!=null) GOAL_CONTRIB_WON=s.goal.contrib;
+      const ga=document.getElementById("goalAge"), ca=document.getElementById("curAge");
+      if(ga&&s.goal.goalAge!=null) ga.value=s.goal.goalAge;
+      if(ca&&s.goal.curAge!=null) ca.value=s.goal.curAge;
+      localStorage.setItem("pf_goal",JSON.stringify({g:GOAL_WON,gAge:+(ga&&ga.value)||50,cAge:+(ca&&ca.value)||30,contrib:GOAL_CONTRIB_WON}));
+    }
+    if(s.sim){ localStorage.setItem("pf_sim",JSON.stringify(s.sim));
+      try{sSeed.value=s.sim.seed;sRate.value=s.sim.rate;sContrib.value=s.sim.contrib;sStart.value=s.sim.start;sEnd.value=s.sim.end;}catch(e){} }
+  } else {
+    syncCatsFromData();
+  }
+  const ga=document.getElementById("goalAge"), ca=document.getElementById("curAge");
+  if(ga&&!ga.value){ga.value=50;} if(ca&&!ca.value){ca.value=30;}
+  ensureSimDefaults();
+  syncGoalField(); updateUnitBtn();
+}
+function ensureSimDefaults(){
+  if(typeof sSeed==="undefined"||!sSeed) return;
+  if(!sSeed.value||sSeed.value==0){const last=data[data.length-1]||{};sSeed.value=last["주식계좌"]||30000000;sRate.value=8;sContrib.value=12000000;sStart.value=30;sEnd.value=50;}
+}
+async function saveToFile(){
+  const json = buildSaveJSON();
+  if(fsSupported){
+    try{
+      if(!fileHandle){
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: "portfolio-"+PF+".json",
+          types: [{description:"JSON", accept:{"application/json":[".json"]}}]
+        });
+      }
+      const w = await fileHandle.createWritable();
+      await w.write(json); await w.close();
+      toast("백업 저장 완료");
+      return;
+    }catch(err){ if(err && err.name === "AbortError") return; }
+  }
+  const blob=new Blob([json],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download="portfolio-"+PF+".json"; a.click();
+  toast("백업 다운로드됨");
+}
+async function openFromFile(){
+  if(fsSupported){
+    try{
+      const [h] = await window.showOpenFilePicker({types:[{description:"JSON",accept:{"application/json":[".json"]}}]});
+      fileHandle = h;
+      const f = await h.getFile();
+      applyLoaded(JSON.parse(await f.text())); save(); renderAll();
+      toast("복원했습니다");
+      return;
+    }catch(err){ if(err && err.name==="AbortError") return; }
+  }
+  document.getElementById("importFile").click();
+}
+function importData(input){
+  const file=input.files[0]; if(!file)return;
+  const rd=new FileReader();
+  rd.onload=e=>{try{applyLoaded(JSON.parse(e.target.result));save();renderAll();toast("복원했습니다");}catch(err){alert("파일 형식 오류");}};
+  rd.readAsText(file);
+}
+function toast(msg){
+  let t=document.getElementById("_toast");
+  if(!t){t=document.createElement("div");t.id="_toast";
+    t.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e222b;border:1px solid #2a2f3a;color:#e6e9ef;padding:11px 18px;border-radius:10px;font-weight:600;font-size:13px;z-index:99;box-shadow:0 6px 24px rgba(0,0,0,.4)";
+    document.body.appendChild(t);}
+  t.textContent=msg; t.style.opacity="1";
+  clearTimeout(t._tmr); t._tmr=setTimeout(()=>t.style.opacity="0",2600);
+  t.style.transition="opacity .4s";
+}
+
+/* =========================================================
+   저장/동기화 레이어 (localStorage + Firebase Firestore)
+   ========================================================= */
+let db=null, auth=null, user=null, unsub=null, unsubMeta=null;
+let applyingRemote=false, lastPushed="", _pushTmr=null;
+
+function bundleKey(pf){ return "pf_bundle_"+pf; }
+function defaultBundle(pf){
+  return { records: pf==="shared" ? JSON.parse(JSON.stringify(SEED)) : [],
+           settings: { cats: DEFAULT_CATS.slice(), signs: {"신용대출":-1}, unit:"won",
+                       goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
+}
+// 모든 변경은 이 함수를 통해 저장됨 (로컬 즉시 + 원격 디바운스)
+function save(){
+  const json = JSON.stringify(currentBundle());
+  try{ localStorage.setItem(bundleKey(PF), json); }catch(e){}
+  if(applyingRemote) return;
+  if(CLOUD_ON && db && user){
+    lastPushed = json;
+    clearTimeout(_pushTmr);
+    _pushTmr=setTimeout(()=>{
+      db.collection("budgets").doc(PF).set(currentBundle())
+        .catch(e=>toast("동기화 오류: "+(e.code||e.message)));
+    }, 700);
+  }
+}
+function applyBundleLocal(){
+  let b=null; try{ b=JSON.parse(localStorage.getItem(bundleKey(PF))); }catch(e){}
+  if(!b) b=defaultBundle(PF);
+  applyingRemote=true; applyLoaded(b); applyingRemote=false;
+}
+function subscribePF(){
+  if(!db||!user) return;
+  if(unsub){ unsub(); unsub=null; }
+  const ref=db.collection("budgets").doc(PF);
+  unsub=ref.onSnapshot(snap=>{
+    if(!snap.exists){
+      const b=defaultBundle(PF);
+      ref.set(b).catch(()=>{});
+      applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll();
+      return;
+    }
+    const b=snap.data();
+    const json=JSON.stringify({records:b.records||[],settings:b.settings||{}});
+    if(json===lastPushed) return;                          // 내가 방금 올린 것
+    if(json===JSON.stringify(currentBundle())) return;     // 이미 동일
+    if(isEditing()) { _pendingRemote=b; return; }          // 편집 중이면 대기
+    applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll();
+  }, err=>toast("동기화 오류: "+(err.code||err.message)));
+}
+let _pendingRemote=null;
+function isEditing(){ const a=document.activeElement; return a && (a.tagName==="INPUT"||a.tagName==="SELECT"); }
+document.addEventListener("focusout",()=>{ setTimeout(()=>{ if(_pendingRemote && !isEditing()){ const b=_pendingRemote;_pendingRemote=null; applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll(); } },300); });
+
+function subscribeMeta(){
+  if(!db||!user) return;
+  if(unsubMeta){ unsubMeta(); unsubMeta=null; }
+  unsubMeta=db.collection("budgets").doc("_meta").onSnapshot(s=>{
+    if(s.exists && s.data().labels){ LABELS=Object.assign({},DEFAULT_LABELS,s.data().labels); saveLabelsLocal(); updatePfBtns(); }
+  }, ()=>{});
+}
+
+/* ---------- 포트폴리오 전환 / 라벨 ---------- */
+function switchPortfolio(pf){
+  if(pf===PF) return;
+  PF=pf; localStorage.setItem("pf_current",pf);
+  _pendingRemote=null;
+  if(CLOUD_ON && db && user){ subscribePF(); }
+  else { applyBundleLocal(); renderAll(); }
+  updatePfBtns();
+}
+function updatePfBtns(){
+  const box=document.getElementById("pfBtns"); if(!box) return;
+  box.innerHTML = PF_IDS.map(id=>`<button class="pfbtn ${id===PF?'active':''}" onclick="switchPortfolio('${id}')">${(LABELS[id]||id).replace(/</g,'')}</button>`).join("")
+    + `<button class="btn-mini" title="현재 포트폴리오 이름 변경" onclick="renamePortfolio()" style="align-self:center">✎ 이름</button>`;
+  const sub=document.getElementById("headSub"); if(sub) sub.textContent=(LABELS[PF]||PF)+" · 자산 추이 · 목표 · 시뮬레이터";
+}
+function renamePortfolio(){
+  const nv=prompt("이 포트폴리오의 이름:", LABELS[PF]||PF);
+  if(!nv||!nv.trim()) return;
+  LABELS[PF]=nv.trim(); saveLabelsLocal(); updatePfBtns();
+  if(CLOUD_ON && db && user) db.collection("budgets").doc("_meta").set({labels:LABELS},{merge:true}).catch(()=>{});
+}
+
+/* ---------- 로그인 ---------- */
+function renderAuthArea(){
+  const a=document.getElementById("authArea"); if(!a) return;
+  if(!CLOUD_ON){ a.innerHTML=`<span class="muted" style="font-size:12px">오프라인 모드</span>`; return; }
+  if(user){ a.innerHTML=`<span class="muted" style="font-size:12px">${(user.email||"로그인됨")}</span> <button class="btn-mini" onclick="doLogout()">로그아웃</button>`; }
+  else a.innerHTML="";
+}
+function showAuthOverlay(){ document.getElementById("authOverlay").classList.remove("hide"); }
+function hideAuthOverlay(){ document.getElementById("authOverlay").classList.add("hide"); }
+function doLogin(){
+  if(!auth) return;
+  const p=new firebase.auth.GoogleAuthProvider();
+  auth.signInWithPopup(p).catch(e=>{ document.getElementById("authMsg").textContent="로그인 오류: "+(e.code||e.message); });
+}
+function doLogout(){ if(auth) auth.signOut(); }
+function initFirebase(){
+  try{
+    firebase.initializeApp(firebaseConfig);
+    auth=firebase.auth(); db=firebase.firestore();
+    auth.onAuthStateChanged(u=>{
+      user=u;
+      if(u){ hideAuthOverlay(); renderAuthArea(); subscribeMeta(); subscribePF(); }
+      else { showAuthOverlay(); renderAuthArea(); }
+    });
+  }catch(e){
+    document.getElementById("authMsg").textContent="Firebase 초기화 오류: "+e.message;
+  }
+}
+
+/* ---------- init ---------- */
+function renderAll(){
+  renderOverview(); renderTrend(); renderGoal(); renderSim(); renderCatManager(); renderAddForm(); renderEditTable();
+}
+function boot(){
+  updatePfBtns(); renderAuthArea(); updateUnitBtn();
+  applyBundleLocal();          // 우선 로컬 캐시로 화면 표시
+  renderAll();
+  if(CLOUD_ON){
+    showAuthOverlay();
+    initFirebase();            // 로그인 성공 시 원격 데이터로 자동 교체
+  }
+}
+boot();
+</script>
+</body>
+</html>
