@@ -97,7 +97,7 @@
     <div class="tab" data-tab="trend" onclick="switchTab('trend')">자산 추이</div>
     <div class="tab" data-tab="goal" onclick="switchTab('goal')">목표 추적</div>
     <div class="tab" data-tab="sim" onclick="switchTab('sim')">복리 시뮬레이터</div>
-    <div class="tab" data-tab="edit" onclick="switchTab('edit')">입력 / 편집</div>
+    <div class="tab" id="tabEdit" data-tab="edit" onclick="switchTab('edit')">입력 / 편집</div>
   </div>
 
   <!-- OVERVIEW -->
@@ -676,79 +676,137 @@ function toast(msg){
 /* =========================================================
    저장/동기화 레이어 (localStorage + Firebase Firestore)
    ========================================================= */
-let db=null, auth=null, user=null, unsub=null, unsubMeta=null;
-let applyingRemote=false, lastPushed="", _pushTmr=null;
+let db=null, auth=null, user=null;
+let applyingRemote=false, pendingRefresh=false;
+let subs=[], lastPushed={}, pushTmrs={};
+// 원본: 개인 A / 개인 B / 공동(목표·시뮬 설정만 저장, 기록은 A+B 자동 합산)
+let SRC = { a:null, b:null, shared:null };
 
 function bundleKey(pf){ return "pf_bundle_"+pf; }
 function defaultBundle(pf){
-  return { records: pf==="shared" ? JSON.parse(JSON.stringify(SEED)) : [],
+  if(pf==="shared") return { settings:{ unit:"won", goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
+  return { records: [],
            settings: { cats: DEFAULT_CATS.slice(), signs: {"신용대출":-1}, unit:"won",
                        goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
 }
-// 모든 변경은 이 함수를 통해 저장됨 (로컬 즉시 + 원격 디바운스)
-function save(){
-  const json = JSON.stringify(currentBundle());
-  try{ localStorage.setItem(bundleKey(PF), json); }catch(e){}
-  if(applyingRemote) return;
-  if(CLOUD_ON && db && user){
-    lastPushed = json;
-    clearTimeout(_pushTmr);
-    _pushTmr=setTimeout(()=>{
-      db.collection("budgets").doc(PF).set(currentBundle())
-        .catch(e=>toast("동기화 오류: "+(e.code||e.message)));
-    }, 700);
-  }
+function loadSrcLocal(){
+  ["a","b","shared"].forEach(id=>{
+    let b=null; try{ b=JSON.parse(localStorage.getItem(bundleKey(id))); }catch(e){}
+    if(!b) b=defaultBundle(id);
+    SRC[id]=b;
+  });
 }
-function applyBundleLocal(){
-  let b=null; try{ b=JSON.parse(localStorage.getItem(bundleKey(PF))); }catch(e){}
-  if(!b) b=defaultBundle(PF);
-  applyingRemote=true; applyLoaded(b); applyingRemote=false;
-}
-function subscribePF(){
-  if(!db||!user) return;
-  if(unsub){ unsub(); unsub=null; }
-  const ref=db.collection("budgets").doc(PF);
-  unsub=ref.onSnapshot(snap=>{
-    if(!snap.exists){
-      const b=defaultBundle(PF);
-      ref.set(b).catch(()=>{});
-      applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll();
-      return;
-    }
-    const b=snap.data();
-    const json=JSON.stringify({records:b.records||[],settings:b.settings||{}});
-    if(json===lastPushed) return;                          // 내가 방금 올린 것
-    if(json===JSON.stringify(currentBundle())) return;     // 이미 동일
-    if(isEditing()) { _pendingRemote=b; return; }          // 편집 중이면 대기
-    applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll();
-  }, err=>toast("동기화 오류: "+(err.code||err.message)));
-}
-let _pendingRemote=null;
-function isEditing(){ const a=document.activeElement; return a && (a.tagName==="INPUT"||a.tagName==="SELECT"); }
-document.addEventListener("focusout",()=>{ setTimeout(()=>{ if(_pendingRemote && !isEditing()){ const b=_pendingRemote;_pendingRemote=null; applyingRemote=true; applyLoaded(b); applyingRemote=false; renderAll(); } },300); });
 
-function subscribeMeta(){
+/* ---------- 공동 = 개인 A + 개인 B 자동 합산 ---------- */
+function personTotal(rec, signs){
+  if(!rec) return 0;
+  if(rec["총 자산"]!=null) return rec["총 자산"];
+  return Object.keys(rec).reduce((a,k)=>{ if(k==="period"||k==="총 자산") return a; const s=(signs&&signs[k]===-1)?-1:1; return a+s*(rec[k]||0); },0);
+}
+function snapAt(arr, period){   // 해당 기간 이하의 가장 최근 기록 (없으면 null)
+  let best=null;
+  (arr||[]).forEach(r=>{ if(r.period<=period && (!best||r.period>best.period)) best=r; });
+  return best;
+}
+function computeShared(){
+  const A=(SRC.a&&SRC.a.records)||[], B=(SRC.b&&SRC.b.records)||[];
+  const sgA=(SRC.a&&SRC.a.settings&&SRC.a.settings.signs)||{};
+  const sgB=(SRC.b&&SRC.b.settings&&SRC.b.settings.signs)||{};
+  const cats=[];
+  ((SRC.a&&SRC.a.settings&&SRC.a.settings.cats)||[]).concat((SRC.b&&SRC.b.settings&&SRC.b.settings.cats)||[])
+    .forEach(c=>{ if(!cats.includes(c)) cats.push(c); });
+  [A,B].forEach(arr=>arr.forEach(r=>Object.keys(r).forEach(k=>{ if(k!=="period"&&k!=="총 자산"&&!cats.includes(k)) cats.push(k); })));
+  const signs={}; cats.forEach(c=>{ signs[c]=(sgA[c]===-1||sgB[c]===-1)?-1:1; });
+  const periods=[]; [A,B].forEach(arr=>arr.forEach(r=>{ if(!periods.includes(r.period)) periods.push(r.period); }));
+  periods.sort();
+  const records=periods.map(p=>{
+    const sa=snapAt(A,p), sb=snapAt(B,p), rec={period:p};
+    cats.forEach(c=>{ rec[c]=((sa&&sa[c])||0)+((sb&&sb[c])||0); });
+    rec["총 자산"]=personTotal(sa,sgA)+personTotal(sb,sgB);
+    return rec;
+  });
+  return { records, cats, signs };
+}
+
+/* ---------- 현재 선택된 포트폴리오를 화면에 반영 ---------- */
+function refreshView(){
+  if(PF==="shared"){
+    const comp=computeShared();
+    const ss=(SRC.shared&&SRC.shared.settings)||{};
+    const bundle={ records:comp.records, settings:{ cats:comp.cats, signs:comp.signs, unit:ss.unit, goal:ss.goal, sim:ss.sim } };
+    applyingRemote=true; applyLoaded(bundle); applyingRemote=false;
+  } else {
+    applyingRemote=true; applyLoaded(SRC[PF]||defaultBundle(PF)); applyingRemote=false;
+  }
+  updateEditability();
+  renderAll();
+}
+function updateEditability(){
+  const et=document.getElementById("tabEdit"); if(!et) return;
+  if(PF==="shared"){
+    et.style.display="none";
+    if(!document.getElementById("edit").classList.contains("hide")){
+      document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab==="overview"));
+      ["overview","trend","goal","sim","edit"].forEach(s=>document.getElementById(s).classList.toggle("hide",s!=="overview"));
+    }
+  } else et.style.display="";
+}
+
+/* ---------- 저장 (로컬 즉시 + 원격 디바운스) ---------- */
+function pushDoc(id,obj){
+  lastPushed[id]=JSON.stringify(obj);
+  clearTimeout(pushTmrs[id]);
+  pushTmrs[id]=setTimeout(()=>{ db.collection("budgets").doc(id).set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message))); },700);
+}
+function save(){
+  if(applyingRemote) return;
+  const id=PF;
+  const obj = (PF==="shared") ? { settings: currentSettings() } : currentBundle();  // 공동은 목표·시뮬만
+  SRC[id]=obj;
+  try{ localStorage.setItem(bundleKey(id), JSON.stringify(obj)); }catch(e){}
+  if(CLOUD_ON && db && user) pushDoc(id,obj);
+}
+
+/* ---------- Firebase 실시간 동기화 ---------- */
+function isEditing(){ const a=document.activeElement; return a && (a.tagName==="INPUT"||a.tagName==="SELECT"); }
+document.addEventListener("focusout",()=>{ setTimeout(()=>{ if(pendingRefresh && !isEditing()){ pendingRefresh=false; refreshView(); } },300); });
+function clearSubs(){ subs.forEach(u=>{try{u();}catch(e){}}); subs=[]; }
+function subscribeAll(){
   if(!db||!user) return;
-  if(unsubMeta){ unsubMeta(); unsubMeta=null; }
-  unsubMeta=db.collection("budgets").doc("_meta").onSnapshot(s=>{
+  clearSubs();
+  ["a","b","shared"].forEach(id=>{
+    subs.push(db.collection("budgets").doc(id).onSnapshot(snap=>{
+      if(!snap.exists){ const def=defaultBundle(id); SRC[id]=def; db.collection("budgets").doc(id).set(def).catch(()=>{}); }
+      else {
+        const dt=snap.data();
+        if(JSON.stringify(dt)===lastPushed[id]){ SRC[id]=dt; return; }   // 내가 방금 올린 것
+        SRC[id]=dt;
+      }
+      if(isEditing()){ pendingRefresh=true; return; }
+      refreshView();
+    }, err=>toast("동기화 오류: "+(err.code||err.message))));
+  });
+  subs.push(db.collection("budgets").doc("_meta").onSnapshot(s=>{
     if(s.exists && s.data().labels){ LABELS=Object.assign({},DEFAULT_LABELS,s.data().labels); saveLabelsLocal(); updatePfBtns(); }
-  }, ()=>{});
+  },()=>{}));
 }
 
 /* ---------- 포트폴리오 전환 / 라벨 ---------- */
 function switchPortfolio(pf){
   if(pf===PF) return;
   PF=pf; localStorage.setItem("pf_current",pf);
-  _pendingRemote=null;
-  if(CLOUD_ON && db && user){ subscribePF(); }
-  else { applyBundleLocal(); renderAll(); }
+  pendingRefresh=false;
+  refreshView();
   updatePfBtns();
 }
 function updatePfBtns(){
   const box=document.getElementById("pfBtns"); if(!box) return;
   box.innerHTML = PF_IDS.map(id=>`<button class="pfbtn ${id===PF?'active':''}" onclick="switchPortfolio('${id}')">${(LABELS[id]||id).replace(/</g,'')}</button>`).join("")
     + `<button class="btn-mini" title="현재 포트폴리오 이름 변경" onclick="renamePortfolio()" style="align-self:center">✎ 이름</button>`;
-  const sub=document.getElementById("headSub"); if(sub) sub.textContent=(LABELS[PF]||PF)+" · 자산 추이 · 목표 · 시뮬레이터";
+  const sub=document.getElementById("headSub");
+  if(sub) sub.textContent = (PF==="shared")
+    ? (LABELS.shared||"공동")+" = "+(LABELS.a||"개인 A")+" + "+(LABELS.b||"개인 B")+" 자동 합산 (입력은 개인 탭에서)"
+    : (LABELS[PF]||PF)+" · 자산 추이 · 목표 · 시뮬레이터";
 }
 function renamePortfolio(){
   const nv=prompt("이 포트폴리오의 이름:", LABELS[PF]||PF);
@@ -778,7 +836,7 @@ function initFirebase(){
     auth=firebase.auth(); db=firebase.firestore();
     auth.onAuthStateChanged(u=>{
       user=u;
-      if(u){ hideAuthOverlay(); renderAuthArea(); subscribeMeta(); subscribePF(); }
+      if(u){ hideAuthOverlay(); renderAuthArea(); subscribeAll(); }
       else { showAuthOverlay(); renderAuthArea(); }
     });
   }catch(e){
@@ -791,9 +849,9 @@ function renderAll(){
   renderOverview(); renderTrend(); renderGoal(); renderSim(); renderCatManager(); renderAddForm(); renderEditTable();
 }
 function boot(){
+  loadSrcLocal();
   updatePfBtns(); renderAuthArea(); updateUnitBtn();
-  applyBundleLocal();          // 우선 로컬 캐시로 화면 표시
-  renderAll();
+  refreshView();               // 우선 로컬 캐시로 화면 표시
   if(CLOUD_ON){
     showAuthOverlay();
     initFirebase();            // 로그인 성공 시 원격 데이터로 자동 교체
