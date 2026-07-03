@@ -15,7 +15,6 @@
     --txt:#e6e9ef; --muted:#9aa3b2; --accent:#4f8cff; --green:#3ecf8e; --red:#ff6b6b;
     --c1:#4f8cff; --c2:#3ecf8e; --c3:#ffb454; --c4:#c678dd; --c5:#56c8d8; --c6:#ff7a90;
   }
-  
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Malgun Gothic",sans-serif;font-size:14px;line-height:1.5}
   header{padding:22px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
@@ -199,7 +198,7 @@
 </div>
 
 <!-- 로그인 오버레이 -->
-<div id="authOverlay" class="authoverlay hide">
+<div id="authOverlay" class="authoverlay" style="display:none">
   <h1 style="margin:0">자산 포트폴리오</h1>
   <div class="muted" style="max-width:340px">둘이 함께 쓰려면 로그인하세요.<br>허용된 계정만 데이터를 보고 편집할 수 있습니다.</div>
   <button class="btn" onclick="doLogin()">Google 계정으로 로그인</button>
@@ -765,8 +764,8 @@ function renderAuthArea(){
   if(user){ a.innerHTML=`<span class="muted" style="font-size:12px">${(user.email||"로그인됨")}</span> <button class="btn-mini" onclick="doLogout()">로그아웃</button>`; }
   else a.innerHTML="";
 }
-function showAuthOverlay(){ document.getElementById("authOverlay").classList.remove("hide"); }
-function hideAuthOverlay(){ document.getElementById("authOverlay").classList.add("hide"); }
+function showAuthOverlay(){ document.getElementById("authOverlay").style.display="flex"; }
+function hideAuthOverlay(){ document.getElementById("authOverlay").style.display="none"; }
 function doLogin(){
   if(!auth) return;
   const p=new firebase.auth.GoogleAuthProvider();
