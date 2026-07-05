@@ -219,13 +219,18 @@ const firebaseConfig = {
 // config가 안 채워졌으면 오프라인(localStorage) 모드로 동작
 const CLOUD_ON = !/PASTE_/.test(firebaseConfig.apiKey) && (typeof firebase !== "undefined");
 
-/* ---------- 포트폴리오 (공동 / 개인 A / 개인 B) ---------- */
-const PF_IDS = ["shared","a","b"];
-const DEFAULT_LABELS = {shared:"공동", a:"개인 A", b:"개인 B"};
-let LABELS = loadLabels();
-let PF = localStorage.getItem("pf_current") || "shared";
-function loadLabels(){ try{const s=localStorage.getItem("pf_labels"); if(s) return Object.assign({},DEFAULT_LABELS,JSON.parse(s));}catch(e){} return Object.assign({},DEFAULT_LABELS); }
-function saveLabelsLocal(){ localStorage.setItem("pf_labels", JSON.stringify(LABELS)); }
+/* ---------- 그룹 모델 (그룹별 독립 · 멤버별 개인 + 공동 자동합산) ----------
+   Firestore 구조:
+     groups/{gid}       = { name, owner, members:[uid...], memberMeta:{uid:{label}}, sharedSettings:{goal,sim,unit} }
+     groups/{gid}/pf/{uid} = { records, settings }   // 멤버별 개인 포트폴리오
+   VIEW(=PF): "shared"(공동=전체합산) 또는 멤버 uid
+------------------------------------------------------------------------ */
+let myUid = "local";          // 내 로그인 UID (오프라인이면 "local")
+let GROUPS = [];              // 내가 속한 그룹 문서 목록
+let GID = localStorage.getItem("cur_group") || null;   // 현재 선택 그룹
+let curGroup = null;          // 현재 그룹 문서
+let PFSRC = {};               // { uid: bundle } (현재 그룹 멤버별 데이터)
+let PF = "shared";            // 현재 보기
 
 const DEFAULT_CATS = ["주식계좌","청약통장","현금","비상금","적금","신용대출"];
 const PALETTE = ["#4f8cff","#3ecf8e","#ffb454","#c678dd","#56c8d8","#ff7a90","#f5a97f","#8bd5ca","#a6da95","#eed49f"];
@@ -674,76 +679,71 @@ function toast(msg){
 }
 
 /* =========================================================
-   저장/동기화 레이어 (localStorage + Firebase Firestore)
+   저장/동기화 레이어 — 그룹 기반 (그룹별 독립 · 멤버별 개인 + 공동 자동합산)
    ========================================================= */
 let db=null, auth=null, user=null;
 let applyingRemote=false, pendingRefresh=false;
-let subs=[], lastPushed={}, pushTmrs={};
-// 원본: 개인 A / 개인 B / 공동(목표·시뮬 설정만 저장, 기록은 A+B 자동 합산)
-let SRC = { a:null, b:null, shared:null };
+let subs=[], pfSubs=[], lastPushed={}, pushTmrs={};
 
-function bundleKey(pf){ return "pf_bundle_"+pf; }
-function defaultBundle(pf){
-  if(pf==="shared") return { settings:{ unit:"won", goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
+function defaultBundle(){
   return { records: [],
            settings: { cats: DEFAULT_CATS.slice(), signs: {"신용대출":-1}, unit:"won",
                        goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
 }
-function loadSrcLocal(){
-  ["a","b","shared"].forEach(id=>{
-    let b=null; try{ b=JSON.parse(localStorage.getItem(bundleKey(id))); }catch(e){}
-    if(!b) b=defaultBundle(id);
-    SRC[id]=b;
-  });
-}
+function stripGroup(g){ return { name:g.name, owner:g.owner, members:g.members||[], memberMeta:g.memberMeta||{}, sharedSettings:g.sharedSettings||{} }; }
+function memberUids(){ return (curGroup&&curGroup.members)||[]; }
+function labelOf(u){ return (curGroup&&curGroup.memberMeta&&curGroup.memberMeta[u]&&curGroup.memberMeta[u].label) || (u==="local"?"나":u.slice(0,6)); }
 
-/* ---------- 공동 = 개인 A + 개인 B 자동 합산 ---------- */
+/* ---------- 공동 = 그룹 전체 멤버 합산 ---------- */
 function personTotal(rec, signs){
   if(!rec) return 0;
   if(rec["총 자산"]!=null) return rec["총 자산"];
   return Object.keys(rec).reduce((a,k)=>{ if(k==="period"||k==="총 자산") return a; const s=(signs&&signs[k]===-1)?-1:1; return a+s*(rec[k]||0); },0);
 }
-function snapAt(arr, period){   // 해당 기간 이하의 가장 최근 기록 (없으면 null)
-  let best=null;
-  (arr||[]).forEach(r=>{ if(r.period<=period && (!best||r.period>best.period)) best=r; });
-  return best;
-}
+function snapAt(arr, period){ let best=null; (arr||[]).forEach(r=>{ if(r.period<=period && (!best||r.period>best.period)) best=r; }); return best; }
 function computeShared(){
-  const A=(SRC.a&&SRC.a.records)||[], B=(SRC.b&&SRC.b.records)||[];
-  const sgA=(SRC.a&&SRC.a.settings&&SRC.a.settings.signs)||{};
-  const sgB=(SRC.b&&SRC.b.settings&&SRC.b.settings.signs)||{};
-  const cats=[];
-  ((SRC.a&&SRC.a.settings&&SRC.a.settings.cats)||[]).concat((SRC.b&&SRC.b.settings&&SRC.b.settings.cats)||[])
-    .forEach(c=>{ if(!cats.includes(c)) cats.push(c); });
-  [A,B].forEach(arr=>arr.forEach(r=>Object.keys(r).forEach(k=>{ if(k!=="period"&&k!=="총 자산"&&!cats.includes(k)) cats.push(k); })));
-  const signs={}; cats.forEach(c=>{ signs[c]=(sgA[c]===-1||sgB[c]===-1)?-1:1; });
-  const periods=[]; [A,B].forEach(arr=>arr.forEach(r=>{ if(!periods.includes(r.period)) periods.push(r.period); }));
+  const uids=memberUids();
+  const cats=[], signs={};
+  uids.forEach(u=>{
+    const b=PFSRC[u]||{}, st=b.settings||{};
+    (st.cats||[]).forEach(c=>{ if(!cats.includes(c)) cats.push(c); });
+    (b.records||[]).forEach(r=>Object.keys(r).forEach(k=>{ if(k!=="period"&&k!=="총 자산"&&!cats.includes(k)) cats.push(k); }));
+    Object.keys(st.signs||{}).forEach(c=>{ if(st.signs[c]===-1) signs[c]=-1; });
+  });
+  cats.forEach(c=>{ if(signs[c]!==-1) signs[c]=1; });
+  const periods=[];
+  uids.forEach(u=>((PFSRC[u]&&PFSRC[u].records)||[]).forEach(r=>{ if(!periods.includes(r.period)) periods.push(r.period); }));
   periods.sort();
   const records=periods.map(p=>{
-    const sa=snapAt(A,p), sb=snapAt(B,p), rec={period:p};
-    cats.forEach(c=>{ rec[c]=((sa&&sa[c])||0)+((sb&&sb[c])||0); });
-    rec["총 자산"]=personTotal(sa,sgA)+personTotal(sb,sgB);
-    return rec;
+    const rec={period:p}; let tot=0; cats.forEach(c=>rec[c]=0);
+    uids.forEach(u=>{
+      const b=PFSRC[u]||{}, snap=snapAt(b.records,p), sg=(b.settings&&b.settings.signs)||{};
+      if(snap){ cats.forEach(c=>{ rec[c]+=(snap[c]||0); }); tot+=personTotal(snap,sg); }
+    });
+    rec["총 자산"]=tot; return rec;
   });
   return { records, cats, signs };
 }
 
-/* ---------- 현재 선택된 포트폴리오를 화면에 반영 ---------- */
+/* ---------- 현재 보기를 화면에 반영 ---------- */
 function refreshView(){
+  renderGroupBar();
+  if(!curGroup){ data=[]; renderAll(); return; }
+  if(PF!=="shared" && memberUids().indexOf(PF)<0) PF="shared";
   if(PF==="shared"){
-    const comp=computeShared();
-    const ss=(SRC.shared&&SRC.shared.settings)||{};
+    const comp=computeShared(), ss=(curGroup.sharedSettings)||{};
     const bundle={ records:comp.records, settings:{ cats:comp.cats, signs:comp.signs, unit:ss.unit, goal:ss.goal, sim:ss.sim } };
     applyingRemote=true; applyLoaded(bundle); applyingRemote=false;
   } else {
-    applyingRemote=true; applyLoaded(SRC[PF]||defaultBundle(PF)); applyingRemote=false;
+    applyingRemote=true; applyLoaded(PFSRC[PF]||defaultBundle()); applyingRemote=false;
   }
   updateEditability();
   renderAll();
 }
+function canEdit(){ return curGroup && PF!=="shared"; }
 function updateEditability(){
   const et=document.getElementById("tabEdit"); if(!et) return;
-  if(PF==="shared"){
+  if(!canEdit()){
     et.style.display="none";
     if(!document.getElementById("edit").classList.contains("hide")){
       document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab==="overview"));
@@ -752,75 +752,178 @@ function updateEditability(){
   } else et.style.display="";
 }
 
-/* ---------- 저장 (로컬 즉시 + 원격 디바운스) ---------- */
-function pushDoc(id,obj){
-  lastPushed[id]=JSON.stringify(obj);
-  clearTimeout(pushTmrs[id]);
-  pushTmrs[id]=setTimeout(()=>{ db.collection("budgets").doc(id).set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message))); },700);
+/* ---------- 저장 ---------- */
+function docRef(path){
+  if(path==="group") return db.collection("groups").doc(GID);
+  return db.collection("groups").doc(GID).collection("pf").doc(path.slice(3)); // "pf:uid"
+}
+function pushDoc(path,obj){
+  lastPushed[path]=JSON.stringify(obj);
+  clearTimeout(pushTmrs[path]);
+  pushTmrs[path]=setTimeout(()=>{ docRef(path).set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message))); },700);
+}
+// 멤버·그룹 변경은 즉시 저장 (중요·저빈도)
+function writeGroupNow(){
+  const obj=stripGroup(curGroup);
+  lastPushed["group"]=JSON.stringify(obj);
+  try{ localStorage.setItem("group_"+GID, JSON.stringify(obj)); }catch(e){}
+  if(CLOUD_ON && db && user) docRef("group").set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message)));
 }
 function save(){
-  if(applyingRemote) return;
-  const id=PF;
-  const obj = (PF==="shared") ? { settings: currentSettings() } : currentBundle();  // 공동은 목표·시뮬만
-  SRC[id]=obj;
-  try{ localStorage.setItem(bundleKey(id), JSON.stringify(obj)); }catch(e){}
-  if(CLOUD_ON && db && user) pushDoc(id,obj);
+  if(applyingRemote || !curGroup) return;
+  if(PF==="shared"){
+    curGroup.sharedSettings = currentSettings();
+    try{ localStorage.setItem("group_"+GID, JSON.stringify(stripGroup(curGroup))); }catch(e){}
+    if(CLOUD_ON && db && user) pushDoc("group", stripGroup(curGroup));
+  } else {
+    const obj=currentBundle();
+    PFSRC[PF]=obj;
+    try{ localStorage.setItem("pf_"+GID+"_"+PF, JSON.stringify(obj)); }catch(e){}
+    if(CLOUD_ON && db && user) pushDoc("pf:"+PF, obj);
+  }
 }
 
-/* ---------- Firebase 실시간 동기화 ---------- */
+/* ---------- 동기화 구독 ---------- */
 function isEditing(){ const a=document.activeElement; return a && (a.tagName==="INPUT"||a.tagName==="SELECT"); }
 document.addEventListener("focusout",()=>{ setTimeout(()=>{ if(pendingRefresh && !isEditing()){ pendingRefresh=false; refreshView(); } },300); });
-function clearSubs(){ subs.forEach(u=>{try{u();}catch(e){}}); subs=[]; }
-function subscribeAll(){
-  if(!db||!user) return;
+function clearSubs(){ subs.concat(pfSubs).forEach(u=>{try{u();}catch(e){}}); subs=[]; pfSubs=[]; }
+function subscribeGroup(){
   clearSubs();
-  ["a","b","shared"].forEach(id=>{
-    subs.push(db.collection("budgets").doc(id).onSnapshot(snap=>{
-      if(!snap.exists){ const def=defaultBundle(id); SRC[id]=def; db.collection("budgets").doc(id).set(def).catch(()=>{}); }
+  subs.push(db.collection("groups").doc(GID).onSnapshot(snap=>{
+    if(!snap.exists) return;
+    curGroup=Object.assign({id:GID}, snap.data());
+    const gi=GROUPS.findIndex(g=>g.id===GID); if(gi>=0) GROUPS[gi]=curGroup;
+    subscribePFDocs();
+    if(isEditing()) pendingRefresh=true; else refreshView();
+  }, err=>toast("동기화 오류: "+(err.code||err.message))));
+}
+function subscribePFDocs(){
+  pfSubs.forEach(u=>{try{u();}catch(e){}}); pfSubs=[];
+  memberUids().forEach(u=>{
+    pfSubs.push(db.collection("groups").doc(GID).collection("pf").doc(u).onSnapshot(snap=>{
+      if(!snap.exists){ PFSRC[u]=defaultBundle(); if(u===myUid) db.collection("groups").doc(GID).collection("pf").doc(u).set(PFSRC[u]).catch(()=>{}); }
       else {
         const dt=snap.data();
-        if(JSON.stringify(dt)===lastPushed[id]){ SRC[id]=dt; return; }   // 내가 방금 올린 것
-        SRC[id]=dt;
+        if(JSON.stringify(dt)===lastPushed["pf:"+u]){ PFSRC[u]=dt; return; }
+        PFSRC[u]=dt;
       }
       if(isEditing()){ pendingRefresh=true; return; }
       refreshView();
     }, err=>toast("동기화 오류: "+(err.code||err.message))));
   });
-  subs.push(db.collection("budgets").doc("_meta").onSnapshot(s=>{
-    if(s.exists && s.data().labels){ LABELS=Object.assign({},DEFAULT_LABELS,s.data().labels); saveLabelsLocal(); updatePfBtns(); }
-  },()=>{}));
 }
 
-/* ---------- 포트폴리오 전환 / 라벨 ---------- */
-function switchPortfolio(pf){
-  if(pf===PF) return;
-  PF=pf; localStorage.setItem("pf_current",pf);
-  pendingRefresh=false;
+/* ---------- 그룹 로드 / 선택 ---------- */
+async function loadGroups(){
+  if(CLOUD_ON && db && user){
+    try{
+      const q=await db.collection("groups").where("members","array-contains",myUid).get();
+      GROUPS=q.docs.map(d=>Object.assign({id:d.id}, d.data()));
+    }catch(e){ toast("그룹 로드 오류: "+(e.code||e.message)); GROUPS=[]; }
+  } else {
+    let g=null; try{ g=JSON.parse(localStorage.getItem("group_local")); }catch(e){}
+    if(!g) g={ name:"내 그룹", owner:"local", members:["local"], memberMeta:{local:{label:"나"}}, sharedSettings:{} };
+    g.id="local"; GROUPS=[g];
+  }
+  if(!GROUPS.length){ curGroup=null; GID=null; refreshView(); renderAuthArea(); return; }
+  if(!GID || !GROUPS.find(g=>g.id===GID)) GID=GROUPS[0].id;
+  selectGroup(GID);
+}
+function selectGroup(gid){
+  GID=gid; localStorage.setItem("cur_group",gid);
+  curGroup=GROUPS.find(g=>g.id===gid)||null;
+  PFSRC={}; pendingRefresh=false;
+  if(CLOUD_ON && db && user){ subscribeGroup(); }
+  else { memberUids().forEach(u=>{ let b=null; try{b=JSON.parse(localStorage.getItem("pf_"+GID+"_"+u));}catch(e){} PFSRC[u]=b||defaultBundle(); }); refreshView(); }
+  renderAuthArea();
+}
+
+/* ---------- 그룹 만들기 / 멤버 관리 ---------- */
+async function createGroup(){
+  const name=prompt("새 그룹 이름 (예: 우리집, 동생):"); if(!name||!name.trim()) return;
+  const dft=(user&&user.email)?user.email.split("@")[0]:"나";
+  const mylabel=(prompt("이 그룹에서 내 이름/라벨:", dft)||dft).trim();
+  const gid=(CLOUD_ON&&db)? db.collection("groups").doc().id : "local";
+  const g={ id:gid, name:name.trim(), owner:myUid, members:[myUid], memberMeta:{[myUid]:{label:mylabel}}, sharedSettings:{} };
+  if(CLOUD_ON && db && user){
+    try{ await db.collection("groups").doc(gid).set(stripGroup(g)); }
+    catch(e){ toast("그룹 생성 오류: "+(e.code||e.message)); return; }
+  } else localStorage.setItem("group_local", JSON.stringify(stripGroup(g)));
+  if(!GROUPS.find(x=>x.id===gid)) GROUPS.push(g);
+  PF="shared"; selectGroup(gid); toast("그룹 '"+g.name+"' 생성됨");
+}
+function addMember(){
+  if(!curGroup) return;
+  if(curGroup.owner!==myUid){ alert("멤버 추가는 그룹 소유자만 할 수 있어요."); return; }
+  const uid=prompt("추가할 멤버의 UID를 붙여넣으세요.\n(상대가 로그인 후 '내 UID 복사'로 알려줍니다)"); if(!uid||!uid.trim()) return;
+  const u=uid.trim();
+  if(curGroup.members.indexOf(u)>=0){ alert("이미 있는 멤버입니다"); return; }
+  const label=(prompt("이 멤버의 이름/라벨 (예: 여자친구, 동생):")||u.slice(0,6)).trim();
+  curGroup.members=curGroup.members.concat([u]);
+  curGroup.memberMeta=Object.assign({},curGroup.memberMeta,{[u]:{label}});
+  writeGroupNow();
+  if(CLOUD_ON && db && user){ db.collection("groups").doc(GID).collection("pf").doc(u).set(defaultBundle()).catch(()=>{}); }
+  else { localStorage.setItem("group_local", JSON.stringify(stripGroup(curGroup))); PFSRC[u]=defaultBundle(); }
+  refreshView(); toast(label+" 추가됨");
+}
+function removeMember(uid){
+  if(!curGroup || curGroup.owner!==myUid){ alert("소유자만 가능합니다"); return; }
+  if(uid===curGroup.owner){ alert("소유자는 제거할 수 없어요"); return; }
+  if(!confirm(labelOf(uid)+" 님을 그룹에서 제거할까요? (그 멤버 데이터는 이 그룹에서 안 보이게 됩니다)")) return;
+  curGroup.members=curGroup.members.filter(m=>m!==uid);
+  const mm=Object.assign({},curGroup.memberMeta); delete mm[uid]; curGroup.memberMeta=mm;
+  if(PF===uid) PF="shared";
+  writeGroupNow();
   refreshView();
-  updatePfBtns();
 }
-function updatePfBtns(){
+function renameMember(uid){
+  if(!curGroup) return;
+  const nv=prompt("이름/라벨 변경:", labelOf(uid)); if(!nv||!nv.trim()) return;
+  curGroup.memberMeta=Object.assign({},curGroup.memberMeta,{[uid]:{label:nv.trim()}});
+  writeGroupNow();
+  renderGroupBar();
+}
+
+/* ---------- 전환 / 상단바 ---------- */
+function switchView(v){ if(v===PF) return; PF=v; pendingRefresh=false; refreshView(); }
+function renderGroupBar(){
   const box=document.getElementById("pfBtns"); if(!box) return;
-  box.innerHTML = PF_IDS.map(id=>`<button class="pfbtn ${id===PF?'active':''}" onclick="switchPortfolio('${id}')">${(LABELS[id]||id).replace(/</g,'')}</button>`).join("")
-    + `<button class="btn-mini" title="현재 포트폴리오 이름 변경" onclick="renamePortfolio()" style="align-self:center">✎ 이름</button>`;
   const sub=document.getElementById("headSub");
+  if(!curGroup){
+    box.innerHTML = `<span class="muted" style="align-self:center">그룹이 없습니다. </span>`
+      + `<button class="btn" onclick="createGroup()">+ 그룹 만들기</button>`
+      + (CLOUD_ON?` <button class="btn-ghost" onclick="loadGroups()">↻ 새로고침</button>`:``);
+    if(sub) sub.textContent="그룹을 만들거나, 소유자에게 내 UID를 전달해 초대받으세요";
+    return;
+  }
+  let groupSel;
+  if(GROUPS.length>1){
+    groupSel=`<select onchange="selectGroup(this.value)" style="width:auto;margin-right:8px">`+
+      GROUPS.map(g=>`<option value="${g.id}" ${g.id===GID?"selected":""}>${(g.name||"그룹").replace(/</g,'')}</option>`).join("")+`</select>`;
+  } else groupSel=`<span class="pfbtn" style="cursor:default;background:var(--panel2)">${(curGroup.name||"그룹").replace(/</g,'')}</span>`;
+  const views=[`<button class="pfbtn ${PF==='shared'?'active':''}" onclick="switchView('shared')">공동</button>`]
+    .concat(memberUids().map(u=>`<button class="pfbtn ${PF===u?'active':''}" onclick="switchView('${u}')">${labelOf(u).replace(/</g,'')}</button>`));
+  const mgmt=[];
+  if(PF!=="shared") mgmt.push(`<button class="btn-mini" onclick="renameMember('${PF}')" title="이름 변경">✎ 이름</button>`);
+  if(curGroup.owner===myUid) mgmt.push(`<button class="btn-mini" onclick="addMember()" title="UID로 멤버 추가">+ 멤버</button>`);
+  if(PF!=="shared" && PF!==curGroup.owner && curGroup.owner===myUid) mgmt.push(`<button class="btn-mini" onclick="removeMember('${PF}')">멤버 제거</button>`);
+  mgmt.push(`<button class="btn-mini" onclick="createGroup()" title="새 그룹 만들기">+ 그룹</button>`);
+  box.innerHTML = groupSel + views.join("") + `<span style="width:10px;display:inline-block"></span>` + mgmt.join(" ");
   if(sub) sub.textContent = (PF==="shared")
-    ? (LABELS.shared||"공동")+" = "+(LABELS.a||"개인 A")+" + "+(LABELS.b||"개인 B")+" 자동 합산 (입력은 개인 탭에서)"
-    : (LABELS[PF]||PF)+" · 자산 추이 · 목표 · 시뮬레이터";
-}
-function renamePortfolio(){
-  const nv=prompt("이 포트폴리오의 이름:", LABELS[PF]||PF);
-  if(!nv||!nv.trim()) return;
-  LABELS[PF]=nv.trim(); saveLabelsLocal(); updatePfBtns();
-  if(CLOUD_ON && db && user) db.collection("budgets").doc("_meta").set({labels:LABELS},{merge:true}).catch(()=>{});
+    ? (curGroup.name||"공동")+" · 전체 멤버 자동 합산 (입력은 멤버 탭에서)"
+    : labelOf(PF)+" 개인 · 자산 추이 · 목표 · 시뮬레이터";
 }
 
 /* ---------- 로그인 ---------- */
 function renderAuthArea(){
   const a=document.getElementById("authArea"); if(!a) return;
   if(!CLOUD_ON){ a.innerHTML=`<span class="muted" style="font-size:12px">오프라인 모드</span>`; return; }
-  if(user){ a.innerHTML=`<span class="muted" style="font-size:12px">${(user.email||"로그인됨")}</span> <button class="btn-mini" onclick="doLogout()">로그아웃</button>`; }
+  if(user){ a.innerHTML=`<button class="btn-mini" onclick="copyMyUid()" title="내 UID 복사 (그룹 초대용)">내 UID 복사</button> <span class="muted" style="font-size:12px">${(user.email||"")}</span> <button class="btn-mini" onclick="doLogout()">로그아웃</button>`; }
   else a.innerHTML="";
+}
+function copyMyUid(){
+  if(navigator.clipboard) navigator.clipboard.writeText(myUid).then(()=>toast("내 UID 복사됨 — 그룹 소유자에게 보내세요")).catch(()=>prompt("이 UID를 복사하세요:",myUid));
+  else prompt("이 UID를 복사하세요:",myUid);
 }
 function showAuthOverlay(){ document.getElementById("authOverlay").style.display="flex"; }
 function hideAuthOverlay(){ document.getElementById("authOverlay").style.display="none"; }
@@ -836,8 +939,8 @@ function initFirebase(){
     auth=firebase.auth(); db=firebase.firestore();
     auth.onAuthStateChanged(u=>{
       user=u;
-      if(u){ hideAuthOverlay(); renderAuthArea(); subscribeAll(); }
-      else { showAuthOverlay(); renderAuthArea(); }
+      if(u){ myUid=u.uid; hideAuthOverlay(); renderAuthArea(); loadGroups(); }
+      else { GROUPS=[]; curGroup=null; clearSubs(); showAuthOverlay(); renderAuthArea(); }
     });
   }catch(e){
     document.getElementById("authMsg").textContent="Firebase 초기화 오류: "+e.message;
@@ -849,13 +952,9 @@ function renderAll(){
   renderOverview(); renderTrend(); renderGoal(); renderSim(); renderCatManager(); renderAddForm(); renderEditTable();
 }
 function boot(){
-  loadSrcLocal();
-  updatePfBtns(); renderAuthArea(); updateUnitBtn();
-  refreshView();               // 우선 로컬 캐시로 화면 표시
-  if(CLOUD_ON){
-    showAuthOverlay();
-    initFirebase();            // 로그인 성공 시 원격 데이터로 자동 교체
-  }
+  renderAuthArea(); updateUnitBtn();
+  if(CLOUD_ON){ showAuthOverlay(); initFirebase(); }
+  else { myUid="local"; loadGroups(); }
 }
 boot();
 </script>
