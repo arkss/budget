@@ -229,10 +229,10 @@ const CLOUD_ON = !/PASTE_/.test(firebaseConfig.apiKey) && (typeof firebase !== "
 const GROUP_DEFS = {
   couple: { name:"우리집", members:[
     { uid:"3SBuPTk7KVYJmhSA024P5OQ5UB42", label:"민성" },
-    { uid:"c77RispjrVWqL20U7L1BxB4Yovr2", label:"여자친구" }
+    { uid:"c77RispjrVWqL20U7L1BxB4Yovr2", label:"미나" }
   ]},
-  solo:   { name:"동생", members:[
-    { uid:"JOPvS73CTXXdw08v79EaLZdbY543", label:"동생" }
+  solo:   { name:"우성", members:[
+    { uid:"JOPvS73CTXXdw08v79EaLZdbY543", label:"우성" }
   ]}
 };
 function myGroupId(uid){ for(const gid in GROUP_DEFS){ if(GROUP_DEFS[gid].members.some(m=>m.uid===uid)) return gid; } return null; }
