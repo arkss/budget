@@ -354,22 +354,22 @@ function renderKPIs(){
   ].join("");
   document.getElementById("kpis").innerHTML = html;
 }
-// 최근 기록의 상위 카테고리별 자산합 {카테고리: 금액} (자산=+ 항목만)
+// 최근 기록의 상위 카테고리별 순액 {카테고리: 자산-부채} (같은 카테고리 내 부채 차감)
 function categoryBreakdown(rec){
   const map={};
-  CATS.forEach(c=>{ if(signOf(c)>0){ const v=rec[c]||0; if(v>0){ const tc=topCatOf(c); map[tc]=(map[tc]||0)+v; } } });
+  CATS.forEach(c=>{ const v=rec[c]||0; if(v){ const tc=topCatOf(c); map[tc]=(map[tc]||0)+signOf(c)*v; } });
   return map;
 }
 function renderCatKpis(){
   const box=document.getElementById("catKpis"); if(!box) return;
   if(!data.length){ box.innerHTML=`<div class="card"><div class="label">카테고리</div><div class="val">-</div></div>`; return; }
   const bd=categoryBreakdown(data[data.length-1]);
-  const totalAssets=Object.values(bd).reduce((a,v)=>a+v,0)||1;
-  const order=TOPCATS.filter(tc=>bd[tc]>0).concat(Object.keys(bd).filter(tc=>!TOPCATS.includes(tc)&&bd[tc]>0));
+  const total=Object.values(bd).reduce((a,v)=>a+v,0)||1;
+  const order=TOPCATS.filter(tc=>bd[tc]).concat(Object.keys(bd).filter(tc=>!TOPCATS.includes(tc)&&bd[tc]));
   if(!order.length){ box.innerHTML=`<div class="card"><div class="label">카테고리</div><div class="val">-</div><div class="delta muted">항목에 카테고리를 지정하세요</div></div>`; return; }
   box.innerHTML = order.map(tc=>{
-    const v=bd[tc], p=(v/totalAssets*100);
-    return `<div class="card"><div class="label" style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:3px;background:${topCatColor(tc)};display:inline-block"></span>${tc}</div><div class="val">${man(v)}</div><div class="delta muted">${p.toFixed(1)}%</div></div>`;
+    const v=bd[tc], p=total?(v/total*100):0, neg=v<0;
+    return `<div class="card"><div class="label" style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:3px;background:${topCatColor(tc)};display:inline-block"></span>${tc}</div><div class="val" style="${neg?'color:var(--red)':''}">${man(v)}</div><div class="delta muted">순액 · ${p.toFixed(1)}%</div></div>`;
   }).join("");
 }
 function kpi(label,val,delta,up){
@@ -528,7 +528,7 @@ function renderCatManager(){
         ondragstart="catDragStart(event,${i})" ondragend="catDragEnd()">⠿</span>
       <span style="width:14px;height:14px;border-radius:4px;flex:none;background:${topCatColor(topCatOf(c))}" title="${topCatOf(c)}"></span>
       <input value="${c.replace(/"/g,'&quot;')}" onchange="renameCat(${i},this.value)" style="flex:1">
-      ${signOf(c)>0 ? catSelectHtml(topCatOf(c), `onchange="setItemCat('${c.replace(/'/g,"\\'")}',this.value)"`) : `<span class="muted" style="font-size:12px;width:110px;text-align:center">부채</span>`}
+      ${catSelectHtml(topCatOf(c), `onchange="setItemCat('${c.replace(/'/g,"\\'")}',this.value)"`)}
       <button class="btn-mini" title="자산↔부채 전환" onclick="toggleSign(${i})">${signOf(c)<0?'−':'＋'}</button>
       <button class="btn-danger" onclick="delCat(${i})">삭제</button>
     </div>`;
@@ -593,18 +593,13 @@ function catDrop(e,target){
   _dragCat=null; saveCats(); save(); renderAll();
 }
 function toggleSign(i){ const c=CATS[i]; SIGN[c]=signOf(c)>0?-1:1; saveSign(); save(); renderAll(); }
-// 새 기록 추가 폼에 입력 중이던 값 보존 (항목 추가 시 초기화 방지)
+// 새 기록 추가 폼 입력값 보존 — 이름 기준(인덱스 변경에도 안전). _addFormMap: 현재 폼의 nf_<i> → 항목명
+let _addFormMap={}, _clearAddForm=false;
 function captureAddForm(){
   const byName={};
-  CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el && el.value!=="") byName[c]=el.value; });
+  Object.keys(_addFormMap).forEach(i=>{ const el=document.getElementById("nf_"+i); if(el && el.value!=="") byName[_addFormMap[i]]=el.value; });
   const p=document.getElementById("nf_period"), t=document.getElementById("nf_total");
   return { period:p?p.value:"", total:t?t.value:"", byName };
-}
-function restoreAddForm(s){
-  if(!s) return;
-  const p=document.getElementById("nf_period"); if(p) p.value=s.period||"";
-  const t=document.getElementById("nf_total"); if(t) t.value=s.total||"";
-  CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el && s.byName[c]!=null) el.value=s.byName[c]; });
 }
 function addCat(){
   const inp=document.getElementById("newCatName");
@@ -613,18 +608,17 @@ function addCat(){
   if(CATS.includes(name)){alert("이미 있는 항목입니다");return;}
   const sign=document.getElementById("newCatSign").value==="-"?-1:1;
   const catSel=document.getElementById("newCatCat");
-  const saved=captureAddForm();               // 입력 중이던 기록 폼 보존
   CATS.push(name); SIGN[name]=sign; saveCats(); saveSign();
-  if(sign>0 && catSel && catSel.value){ ITEMCAT[name]=catSel.value; saveGroupMeta(); }
+  if(catSel && catSel.value){ ITEMCAT[name]=catSel.value; saveGroupMeta(); }
   data.forEach(r=>{ if(r[name]==null) r[name]=0; });
-  save(); inp.value=""; renderAll();
-  restoreAddForm(saved);                       // 값 복원
+  save(); inp.value=""; renderAll();   // renderAddForm이 입력값 자동 보존
 }
 function renameCat(i,nv){
   nv=nv.trim(); const old=CATS[i];
   if(!nv||nv===old){ renderCatManager(); return; }
   if(CATS.includes(nv)){ alert("이미 있는 항목입니다"); renderCatManager(); return; }
   CATS[i]=nv; SIGN[nv]=signOf(old); delete SIGN[old]; saveCats(); saveSign();
+  if(_addFormMap[i]!=null) _addFormMap[i]=nv;   // 새 기록 폼 입력값이 이름 변경을 따라가도록
   if(ITEMCAT[old]!=null){ ITEMCAT[nv]=ITEMCAT[old]; delete ITEMCAT[old]; saveGroupMeta(); }
   data.forEach(r=>{ if(old in r){ r[nv]=r[old]; delete r[old]; } });
   save(); renderAll();
@@ -640,12 +634,20 @@ function delCat(i){
 
 /* ---------- edit ---------- */
 function renderAddForm(){
-  const f=document.getElementById("addForm");
+  const f=document.getElementById("addForm"); if(!f) return;
+  const saved = _clearAddForm ? null : captureAddForm();   // 재렌더 전 입력값 보존
+  _clearAddForm=false;
   const u=unitLabel();
+  _addFormMap={};
   let h=`<div class="field"><label>기간 (예: 2026.06.25)</label><input id="nf_period"></div>`;
-  catOrder().forEach(i=>{const c=CATS[i];h+=`<div class="field"><label>${signOf(c)<0?'− ':''}${c} (${u})</label><input inputmode="numeric" id="nf_${i}" oninput="fmtComma(this)"></div>`;});
+  catOrder().forEach(i=>{const c=CATS[i]; _addFormMap[i]=c; h+=`<div class="field"><label>${signOf(c)<0?'− ':''}${c} (${u})</label><input inputmode="numeric" id="nf_${i}" oninput="fmtComma(this)"></div>`;});
   h+=`<div class="field"><label>총 자산 (${u}, 선택)</label><input inputmode="numeric" id="nf_total" oninput="fmtComma(this)" placeholder="비우면 자동합산"></div>`;
   f.innerHTML=h;
+  if(saved){   // 이름 기준 복원
+    const p=document.getElementById("nf_period"); if(p&&saved.period) p.value=saved.period;
+    const t=document.getElementById("nf_total"); if(t&&saved.total) t.value=saved.total;
+    Object.keys(_addFormMap).forEach(i=>{ const nm=_addFormMap[i]; if(saved.byName[nm]!=null){ const el=document.getElementById("nf_"+i); if(el) el.value=saved.byName[nm]; } });
+  }
 }
 function fillLast(){
   if(data.length===0){ alert("불러올 직전 기록이 없습니다"); return; }
@@ -661,7 +663,7 @@ function addRecord(){
   CATS.forEach((c,i)=>{const v=document.getElementById("nf_"+i).value; r[c]=v.trim()===""?0:parseToWon(v);});
   const t=document.getElementById("nf_total").value;
   r["총 자산"]= t.trim()===""? sumCats(r) : parseToWon(t);
-  data.push(r); save(); renderAll();
+  data.push(r); save(); _clearAddForm=true; renderAll();   // 기록 추가 후에는 폼 비움
 }
 function renderEditTable(){
   const t=document.getElementById("editTable");
