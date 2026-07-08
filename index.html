@@ -104,11 +104,15 @@
   <section id="overview">
     <div class="grid cards" id="kpis"></div>
     <div class="panel">
+      <h2>카테고리별 자산</h2>
+      <div class="grid cards" id="catKpis"></div>
+    </div>
+    <div class="panel">
       <h2>총자산 추이</h2>
       <div class="chartbox"><canvas id="ovChart"></canvas></div>
     </div>
     <div class="panel">
-      <h2>최근 자산 구성</h2>
+      <h2>카테고리별 구성</h2>
       <div class="chartbox sm"><canvas id="compChart"></canvas></div>
     </div>
   </section>
@@ -135,8 +139,8 @@
       <h2>목표 설정</h2>
       <div class="formgrid">
         <div class="field"><label id="goalAmtLabel">목표 자산 (원)</label><input inputmode="numeric" id="goalAmount" oninput="fmtComma(this);renderGoal();save()"></div>
-        <div class="field"><label>목표 나이</label><input type="number" id="goalAge" oninput="renderGoal();save()"></div>
-        <div class="field"><label>현재 나이</label><input type="number" id="curAge" oninput="renderGoal();save()"></div>
+        <div class="field"><label>목표 연도</label><input type="number" id="goalAge" oninput="renderGoal();save()"></div>
+        <div class="field"><label>현재 연도</label><input type="number" id="curAge" oninput="renderGoal();save()"></div>
         <div class="field"><label id="goalContribLabel">연 저축액 (원)</label><input inputmode="numeric" id="goalContrib" oninput="fmtComma(this);renderGoal();save()"></div>
       </div>
       <div class="goalbar"><div class="fill" id="goalFill">0%</div></div>
@@ -168,14 +172,24 @@
   <!-- EDIT -->
   <section id="edit" class="hide">
     <div class="panel">
-      <h2>항목 관리</h2>
-      <div class="grid" id="catManager" style="gap:8px;max-width:560px"></div>
+      <h2>상위 카테고리 <span class="muted" style="font-size:12px;font-weight:400">(도미네집 공유)</span></h2>
+      <div id="topCatManager" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
       <div class="row-actions">
-        <select id="newCatSign" style="max-width:110px"><option value="+">＋ 자산</option><option value="-">− 부채</option></select>
-        <input id="newCatName" placeholder="새 항목 이름 (예: 코인, 대출)" style="max-width:240px" onkeydown="if(event.key==='Enter')addCat()">
+        <input id="newTopCat" placeholder="새 카테고리 (예: 부동산, 주식, 코인)" style="max-width:240px" onkeydown="if(event.key==='Enter')addTopCat()">
+        <button class="btn" onclick="addTopCat()">카테고리 추가</button>
+      </div>
+      <div class="hint">상위 카테고리는 미나·민성이 함께 공유합니다. 각 항목을 아래에서 카테고리에 지정하면 대시보드에 카테고리별로 집계됩니다.</div>
+    </div>
+    <div class="panel">
+      <h2>항목 관리</h2>
+      <div class="grid" id="catManager" style="gap:8px;max-width:640px"></div>
+      <div class="row-actions">
+        <select id="newCatSign" style="max-width:100px"><option value="+">＋ 자산</option><option value="-">− 부채</option></select>
+        <select id="newCatCat" style="max-width:130px"></select>
+        <input id="newCatName" placeholder="새 항목 이름 (예: 미국 주식)" style="max-width:220px" onkeydown="if(event.key==='Enter')addCat()">
         <button class="btn" onclick="addCat()">항목 추가</button>
       </div>
-      <div class="hint">⠿ 핸들을 드래그해 순서 변경(같은 그룹 안에서), ＋/− 버튼으로 자산↔부채 전환. 부채 항목은 총자산 자동합산에서 차감됩니다. 이름 변경·삭제는 모든 기록에 반영됩니다.</div>
+      <div class="hint">⠿ 드래그로 순서 변경, ＋/− 로 자산↔부채 전환, 카테고리 드롭다운으로 상위 카테고리 지정. 이름 변경·삭제는 모든 기록에 반영됩니다.</div>
     </div>
     <div class="panel">
       <h2>새 기록 추가</h2>
@@ -227,7 +241,7 @@ const CLOUD_ON = !/PASTE_/.test(firebaseConfig.apiKey) && (typeof firebase !== "
    Firestore: groups/{gid} = {sharedSettings}, groups/{gid}/pf/{uid} = {records,settings}
 ------------------------------------------------------------------------ */
 const GROUP_DEFS = {
-  couple: { name:"우리집", members:[
+  couple: { name:"도미네집", members:[
     { uid:"3SBuPTk7KVYJmhSA024P5OQ5UB42", label:"민성" },
     { uid:"c77RispjrVWqL20U7L1BxB4Yovr2", label:"미나" }
   ]},
@@ -247,6 +261,21 @@ const DEFAULT_CATS = ["주식계좌","청약통장","현금","비상금","적금
 const PALETTE = ["#4f8cff","#3ecf8e","#ffb454","#c678dd","#56c8d8","#ff7a90","#f5a97f","#8bd5ca","#a6da95","#eed49f"];
 let CATS = DEFAULT_CATS.slice();
 let SIGN = {"신용대출":-1};
+
+/* ---------- 상위 카테고리 (그룹 공유: 미나 ↔ 민성) ---------- */
+const DEFAULT_TOPCATS = ["부동산","주식","코인","예적금","현금","기타"];
+let TOPCATS = DEFAULT_TOPCATS.slice();   // 공유 카테고리 목록
+let ITEMCAT = {};                        // { 항목이름: 상위카테고리 } (그룹 공유)
+function guessTopCat(name){
+  if(/주식|증권|ETF|펀드|토스|\bNH\b|나스닥|미국|국내|해외|독일/i.test(name)) return "주식";
+  if(/코인|비트|이더|crypto/i.test(name)) return "코인";
+  if(/부동산|아파트|주택|전세|보증금|캐슬|빌라|오피스텔|분양/.test(name)) return "부동산";
+  if(/예금|적금|청약|저축|펀드/.test(name)) return "예적금";
+  if(/현금|통장|입출금|비상금|파킹|CMA/i.test(name)) return "현금";
+  return "기타";
+}
+function topCatOf(name){ const t=ITEMCAT[name]; return (t && TOPCATS.includes(t)) ? t : guessTopCat(name); }
+function topCatColor(tc){ const i=TOPCATS.indexOf(tc); return colorOf(i>=0?i:TOPCATS.length); }
 function saveCats(){ localStorage.setItem("pf_cats", JSON.stringify(CATS)); }
 function saveSign(){ localStorage.setItem("pf_sign", JSON.stringify(SIGN)); }
 function signOf(c){ return SIGN[c]===-1 ? -1 : 1; }
@@ -318,16 +347,30 @@ function renderKPIs(){
   const lt = totalOf(last), pt = totalOf(prev);
   const delta = lt-pt, pct = pt? (delta/pt*100):0;
   const first = data[0]; const grow = totalOf(last)-totalOf(first);
-  const stockCats = CATS.filter(c=>c.includes("주식"));
-  const invVal = stockCats.reduce((a,c)=>a+(last[c]||0),0);
-  const invSub = stockCats.length>1 ? stockCats.join(" + ") : null;
   const html = [
     kpi("최근 총자산", eok(lt), won(lt)),
     kpi("최근 변동", (delta>=0?"+":"")+man(delta), (pct>=0?"+":"")+pct.toFixed(1)+"%", delta>=0),
-    kpi("주식", man(invVal), invSub||won(invVal)),
     kpi("누적 증가", "+"+man(grow), data[0].period+" 대비", true),
   ].join("");
   document.getElementById("kpis").innerHTML = html;
+}
+// 최근 기록의 상위 카테고리별 자산합 {카테고리: 금액} (자산=+ 항목만)
+function categoryBreakdown(rec){
+  const map={};
+  CATS.forEach(c=>{ if(signOf(c)>0){ const v=rec[c]||0; if(v>0){ const tc=topCatOf(c); map[tc]=(map[tc]||0)+v; } } });
+  return map;
+}
+function renderCatKpis(){
+  const box=document.getElementById("catKpis"); if(!box) return;
+  if(!data.length){ box.innerHTML=`<div class="card"><div class="label">카테고리</div><div class="val">-</div></div>`; return; }
+  const bd=categoryBreakdown(data[data.length-1]);
+  const totalAssets=Object.values(bd).reduce((a,v)=>a+v,0)||1;
+  const order=TOPCATS.filter(tc=>bd[tc]>0).concat(Object.keys(bd).filter(tc=>!TOPCATS.includes(tc)&&bd[tc]>0));
+  if(!order.length){ box.innerHTML=`<div class="card"><div class="label">카테고리</div><div class="val">-</div><div class="delta muted">항목에 카테고리를 지정하세요</div></div>`; return; }
+  box.innerHTML = order.map(tc=>{
+    const v=bd[tc], p=(v/totalAssets*100);
+    return `<div class="card"><div class="label" style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:3px;background:${topCatColor(tc)};display:inline-block"></span>${tc}</div><div class="val">${man(v)}</div><div class="delta muted">${p.toFixed(1)}%</div></div>`;
+  }).join("");
 }
 function kpi(label,val,delta,up){
   let d = delta? `<div class="delta ${up===undefined?'muted':(up?'up':'down')}">${delta}</div>`:"";
@@ -336,6 +379,7 @@ function kpi(label,val,delta,up){
 
 function renderOverview(){
   renderKPIs();
+  renderCatKpis();
   destroy("ovChart");
   charts.ovChart = new Chart(document.getElementById("ovChart"),{
     type:"line",
@@ -344,10 +388,11 @@ function renderOverview(){
   });
   const last=data[data.length-1]||{};
   destroy("compChart");
-  const cats=CATS.filter(c=>signOf(c)>0 && (last[c]||0)>0);
+  const bd=categoryBreakdown(last);
+  const labels=TOPCATS.filter(tc=>bd[tc]>0).concat(Object.keys(bd).filter(tc=>!TOPCATS.includes(tc)&&bd[tc]>0));
   charts.compChart=new Chart(document.getElementById("compChart"),{
     type:"doughnut",
-    data:{labels:cats,datasets:[{data:cats.map(c=>last[c]),backgroundColor:cats.map(c=>colorOf(CATS.indexOf(c))),borderColor:"#171a21",borderWidth:2}]},
+    data:{labels,datasets:[{data:labels.map(tc=>bd[tc]),backgroundColor:labels.map(tc=>topCatColor(tc)),borderColor:"#171a21",borderWidth:2}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"right",labels:{color:"#9aa3b2"}},tooltip:{callbacks:{label:ctx=>ctx.label+": "+won(ctx.raw)}}}}
   });
 }
@@ -401,27 +446,28 @@ function renderGoal(){
   GOAL_WON=parseToWon(document.getElementById("goalAmount").value);
   GOAL_CONTRIB_WON=parseToWon(document.getElementById("goalContrib").value);
   const g=GOAL_WON, contrib=GOAL_CONTRIB_WON;
-  const gAge=+document.getElementById("goalAge").value||50;
-  const cAge=+document.getElementById("curAge").value||30;
-  localStorage.setItem("pf_goal",JSON.stringify({g,gAge,cAge,contrib}));
+  const thisYear=new Date().getFullYear();
+  const gYear=+document.getElementById("goalAge").value||(thisYear+20);
+  const cYear=+document.getElementById("curAge").value||thisYear;
+  localStorage.setItem("pf_goal",JSON.stringify({g,gAge:gYear,cAge:cYear,contrib}));
   const cur=totalOf(data[data.length-1]);
   const pct=g?Math.min(100,cur/g*100):0;
   const fill=document.getElementById("goalFill");
   fill.style.width=pct.toFixed(1)+"%"; fill.textContent=pct.toFixed(1)+"%";
-  const years=Math.max(0,gAge-cAge);
+  const years=Math.max(0,gYear-cYear);
   const need=Math.max(0,g-cur);
   const rWithSave=(years>0&&cur>0)? solveRate(cur,g,years,contrib)*100 : 0;
   const rNoSave  =(years>0&&cur>0)? (Math.pow(g/cur,1/years)-1)*100 : 0;
   const saveTotal=contrib*years;
   document.getElementById("goalText").innerHTML=
-    `목표 <b>${eok(g)}</b> 중 현재 <b>${eok(cur)}</b> 달성, 남은 금액 <b>${won(need)}</b> · 기간 <b>${years}년</b>.<br>`+
+    `목표 <b>${eok(g)}</b> 중 현재 <b>${eok(cur)}</b> 달성, 남은 금액 <b>${won(need)}</b> · <b>${cYear}년 → ${gYear}년</b> (${years}년).<br>`+
     `매년 <b>${won(contrib)}</b> 저축(누적 ${eok(saveTotal)})한다면 필요 투자수익률은 <b style="color:var(--green)">연 ${rWithSave.toFixed(1)}%</b>.<br>`+
     `<span class="muted">참고: 저축 없이 현재 자산만 굴린다면 연 ${rNoSave.toFixed(1)}% 필요.</span>`;
   destroy("goalChart");
   const labels=[],proj=[],contribOnly=[];
   let b=cur, p=cur;
   for(let y=0;y<=years;y++){
-    labels.push((cAge+y)+"세");
+    labels.push((cYear+y)+"년");
     proj.push(b);
     contribOnly.push(p);
     b=b*(1+rWithSave/100)+contrib;
@@ -467,15 +513,22 @@ function renderSim(){
 }
 
 /* ---------- 항목 관리 ---------- */
+function catSelectHtml(cur, onchangeAttr){
+  const opts=TOPCATS.map(tc=>`<option value="${tc}" ${tc===cur?"selected":""}>${tc}</option>`).join("");
+  return `<select ${onchangeAttr} style="max-width:110px">${opts}</select>`;
+}
 function renderCatManager(){
+  renderTopCatManager();
+  fillNewCatCat();
   const box=document.getElementById("catManager");
   if(!box) return;
   const rowHtml=(c,i)=>`<div class="catrow" data-i="${i}"
       ondragover="catDragOver(event,${i})" ondragleave="catDragLeave(${i})" ondrop="catDrop(event,${i})">
       <span class="drag" draggable="true" title="드래그해서 순서 변경"
         ondragstart="catDragStart(event,${i})" ondragend="catDragEnd()">⠿</span>
-      <span style="width:14px;height:14px;border-radius:4px;flex:none;background:${colorOf(i)}"></span>
+      <span style="width:14px;height:14px;border-radius:4px;flex:none;background:${topCatColor(topCatOf(c))}" title="${topCatOf(c)}"></span>
       <input value="${c.replace(/"/g,'&quot;')}" onchange="renameCat(${i},this.value)" style="flex:1">
+      ${signOf(c)>0 ? catSelectHtml(topCatOf(c), `onchange="setItemCat('${c.replace(/'/g,"\\'")}',this.value)"`) : `<span class="muted" style="font-size:12px;width:110px;text-align:center">부채</span>`}
       <button class="btn-mini" title="자산↔부채 전환" onclick="toggleSign(${i})">${signOf(c)<0?'−':'＋'}</button>
       <button class="btn-danger" onclick="delCat(${i})">삭제</button>
     </div>`;
@@ -485,6 +538,41 @@ function renderCatManager(){
     (arr.length? arr.map(i=>rowHtml(CATS[i],i)).join("") : `<div class="hint" style="margin:0 0 6px">${empty}</div>`);
   box.innerHTML = sec("＋ 항목 (자산)",plus,"자산 항목 없음")
     + `<div style="height:10px"></div>` + sec("− 항목 (부채/차감)",minus,"부채 항목 없음");
+}
+function renderTopCatManager(){
+  const box=document.getElementById("topCatManager"); if(!box) return;
+  box.innerHTML = TOPCATS.map(tc=>`<span class="pfbtn" style="cursor:default;display:inline-flex;align-items:center;gap:6px">
+      <span style="width:10px;height:10px;border-radius:3px;background:${topCatColor(tc)}"></span>${tc.replace(/</g,'')}
+      <span onclick="renameTopCat('${tc.replace(/'/g,"\\'")}')" title="이름변경" style="cursor:pointer;color:var(--muted)">✎</span>
+      <span onclick="delTopCat('${tc.replace(/'/g,"\\'")}')" title="삭제" style="cursor:pointer;color:var(--red)">×</span>
+    </span>`).join("") || `<span class="muted">카테고리가 없습니다</span>`;
+}
+function fillNewCatCat(){
+  const sel=document.getElementById("newCatCat"); if(!sel) return;
+  sel.innerHTML=TOPCATS.map(tc=>`<option value="${tc}">${tc}</option>`).join("");
+}
+function setItemCat(name, tc){ ITEMCAT[name]=tc; saveGroupMeta(); renderCatManager(); renderOverview(); }
+function addTopCat(){
+  const inp=document.getElementById("newTopCat"); const v=(inp.value||"").trim();
+  if(!v){ alert("카테고리 이름을 입력하세요"); return; }
+  if(TOPCATS.includes(v)){ alert("이미 있는 카테고리입니다"); return; }
+  TOPCATS.push(v); saveGroupMeta(); inp.value=""; renderCatManager(); renderOverview();
+}
+function renameTopCat(tc){
+  const nv=(prompt("카테고리 이름 변경:", tc)||"").trim();
+  if(!nv||nv===tc) return;
+  if(TOPCATS.includes(nv)){ alert("이미 있는 카테고리입니다"); return; }
+  TOPCATS=TOPCATS.map(x=>x===tc?nv:x);
+  Object.keys(ITEMCAT).forEach(k=>{ if(ITEMCAT[k]===tc) ITEMCAT[k]=nv; });
+  saveGroupMeta(); renderCatManager(); renderOverview();
+}
+function delTopCat(tc){
+  if(TOPCATS.length<=1){ alert("최소 1개는 있어야 합니다"); return; }
+  if(!confirm(`'${tc}' 카테고리를 삭제할까요? 이 카테고리의 항목은 '기타'로 이동합니다.`)) return;
+  TOPCATS=TOPCATS.filter(x=>x!==tc);
+  if(!TOPCATS.includes("기타")) TOPCATS.push("기타");
+  Object.keys(ITEMCAT).forEach(k=>{ if(ITEMCAT[k]===tc) ITEMCAT[k]="기타"; });
+  saveGroupMeta(); renderCatManager(); renderOverview();
 }
 let _dragCat=null;
 function catDragStart(e,i){ _dragCat=i; e.dataTransfer.effectAllowed="move"; }
@@ -505,21 +593,39 @@ function catDrop(e,target){
   _dragCat=null; saveCats(); save(); renderAll();
 }
 function toggleSign(i){ const c=CATS[i]; SIGN[c]=signOf(c)>0?-1:1; saveSign(); save(); renderAll(); }
+// 새 기록 추가 폼에 입력 중이던 값 보존 (항목 추가 시 초기화 방지)
+function captureAddForm(){
+  const byName={};
+  CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el && el.value!=="") byName[c]=el.value; });
+  const p=document.getElementById("nf_period"), t=document.getElementById("nf_total");
+  return { period:p?p.value:"", total:t?t.value:"", byName };
+}
+function restoreAddForm(s){
+  if(!s) return;
+  const p=document.getElementById("nf_period"); if(p) p.value=s.period||"";
+  const t=document.getElementById("nf_total"); if(t) t.value=s.total||"";
+  CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el && s.byName[c]!=null) el.value=s.byName[c]; });
+}
 function addCat(){
   const inp=document.getElementById("newCatName");
   const name=inp.value.trim();
   if(!name){alert("항목 이름을 입력하세요");return;}
   if(CATS.includes(name)){alert("이미 있는 항목입니다");return;}
   const sign=document.getElementById("newCatSign").value==="-"?-1:1;
+  const catSel=document.getElementById("newCatCat");
+  const saved=captureAddForm();               // 입력 중이던 기록 폼 보존
   CATS.push(name); SIGN[name]=sign; saveCats(); saveSign();
+  if(sign>0 && catSel && catSel.value){ ITEMCAT[name]=catSel.value; saveGroupMeta(); }
   data.forEach(r=>{ if(r[name]==null) r[name]=0; });
   save(); inp.value=""; renderAll();
+  restoreAddForm(saved);                       // 값 복원
 }
 function renameCat(i,nv){
   nv=nv.trim(); const old=CATS[i];
   if(!nv||nv===old){ renderCatManager(); return; }
   if(CATS.includes(nv)){ alert("이미 있는 항목입니다"); renderCatManager(); return; }
   CATS[i]=nv; SIGN[nv]=signOf(old); delete SIGN[old]; saveCats(); saveSign();
+  if(ITEMCAT[old]!=null){ ITEMCAT[nv]=ITEMCAT[old]; delete ITEMCAT[old]; saveGroupMeta(); }
   data.forEach(r=>{ if(old in r){ r[nv]=r[old]; delete r[old]; } });
   save(); renderAll();
 }
@@ -527,6 +633,7 @@ function delCat(i){
   const c=CATS[i];
   if(!confirm(`'${c}' 항목을 삭제할까요? 모든 기록에서 이 값이 사라집니다.`)) return;
   CATS.splice(i,1); delete SIGN[c]; saveCats(); saveSign();
+  if(ITEMCAT[c]!=null){ delete ITEMCAT[c]; saveGroupMeta(); }
   data.forEach(r=>{ delete r[c]; });
   save(); renderAll();
 }
@@ -599,8 +706,8 @@ function currentSettings(){
   return {
     cats: CATS, signs: SIGN, unit: UNIT,
     goal: { amount: GOAL_WON, contrib: GOAL_CONTRIB_WON,
-            goalAge: +document.getElementById("goalAge").value||50,
-            curAge: +document.getElementById("curAge").value||30 },
+            goalAge: +document.getElementById("goalAge").value||(new Date().getFullYear()+20),
+            curAge: +document.getElementById("curAge").value||new Date().getFullYear() },
     sim
   };
 }
@@ -630,8 +737,8 @@ function applyLoaded(parsed){
   } else {
     syncCatsFromData();
   }
-  const ga=document.getElementById("goalAge"), ca=document.getElementById("curAge");
-  if(ga&&!ga.value){ga.value=50;} if(ca&&!ca.value){ca.value=30;}
+  const ga=document.getElementById("goalAge"), ca=document.getElementById("curAge"), thisYr=new Date().getFullYear();
+  if(ca&&!ca.value){ca.value=thisYr;} if(ga&&!ga.value){ga.value=thisYr+20;}
   ensureSimDefaults();
   syncGoalField(); updateUnitBtn();
 }
@@ -699,7 +806,7 @@ let subs=[], pfSubs=[], lastPushed={}, pushTmrs={};
 function defaultBundle(){
   return { records: [],
            settings: { cats: DEFAULT_CATS.slice(), signs: {"신용대출":-1}, unit:"won",
-                       goal:{amount:100000000,contrib:12000000,goalAge:50,curAge:30}, sim:null } };
+                       goal:{amount:100000000,contrib:12000000,goalAge:(new Date().getFullYear()+20),curAge:new Date().getFullYear()}, sim:null } };
 }
 function stripGroup(g){ return { name:g.name, owner:g.owner, members:g.members||[], memberMeta:g.memberMeta||{}, sharedSettings:g.sharedSettings||{} }; }
 function memberUids(){ return (curGroup&&curGroup.members)||[]; }
@@ -773,12 +880,19 @@ function pushDoc(path,obj){
   clearTimeout(pushTmrs[path]);
   pushTmrs[path]=setTimeout(()=>{ docRef(path).set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message))); },700);
 }
+// 그룹 문서 = 공동설정 + 공유 카테고리(TOPCATS/ITEMCAT)
+function groupDocData(){ return { sharedSettings: (curGroup&&curGroup.sharedSettings)||{}, topCats: TOPCATS, itemCat: ITEMCAT }; }
+function saveGroupMeta(){   // 카테고리 변경 저장 (그룹 공유)
+  if(!curGroup) return;
+  if(CLOUD_ON && db && user) pushDoc("group", groupDocData());
+  else try{ localStorage.setItem("groupmeta_"+GID, JSON.stringify(groupDocData())); }catch(e){}
+}
 function save(){
   if(applyingRemote || !curGroup) return;
   if(PF==="shared"){
     curGroup.sharedSettings = currentSettings();
-    if(CLOUD_ON && db && user) pushDoc("group", { sharedSettings: currentSettings() });
-    else try{ localStorage.setItem("shared_"+GID, JSON.stringify(currentSettings())); }catch(e){}
+    if(CLOUD_ON && db && user) pushDoc("group", groupDocData());
+    else try{ localStorage.setItem("groupmeta_"+GID, JSON.stringify(groupDocData())); }catch(e){}
   } else {
     const obj=currentBundle();
     PFSRC[PF]=obj;
@@ -795,7 +909,10 @@ function subscribeGroup(){
   clearSubs();
   // 그룹 문서: 공동(목표·시뮬) 설정만. 멤버 구성은 하드코딩이라 저장 안 함.
   subs.push(db.collection("groups").doc(GID).onSnapshot(snap=>{
-    curGroup.sharedSettings = (snap.exists && snap.data() && snap.data().sharedSettings) || {};
+    const d=(snap.exists && snap.data()) || {};
+    curGroup.sharedSettings = d.sharedSettings || {};
+    TOPCATS = (Array.isArray(d.topCats) && d.topCats.length) ? d.topCats.slice() : DEFAULT_TOPCATS.slice();
+    ITEMCAT = (d.itemCat && typeof d.itemCat==="object") ? d.itemCat : {};
     if(isEditing()) pendingRefresh=true; else refreshView();
   }, err=>toast("동기화 오류: "+(err.code||err.message))));
   subscribePFDocs();
@@ -828,7 +945,7 @@ function setupMyGroup(){
   PF = (curGroup.members.length>1) ? "shared" : myUid;   // 여럿이면 공동, 혼자면 본인
   if(CLOUD_ON && db && user){ subscribeGroup(); }
   else {
-    try{ curGroup.sharedSettings=JSON.parse(localStorage.getItem("shared_"+GID))||{}; }catch(e){}
+    try{ const gm=JSON.parse(localStorage.getItem("groupmeta_"+GID)); if(gm){ curGroup.sharedSettings=gm.sharedSettings||{}; TOPCATS=(gm.topCats&&gm.topCats.length)?gm.topCats.slice():DEFAULT_TOPCATS.slice(); ITEMCAT=gm.itemCat||{}; } }catch(e){}
     curGroup.members.forEach(u=>{ let b=null; try{b=JSON.parse(localStorage.getItem("pf_"+GID+"_"+u));}catch(e){} PFSRC[u]=b||defaultBundle(); });
     refreshView();
   }
