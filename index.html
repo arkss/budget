@@ -199,7 +199,7 @@
         <button class="btn-ghost" onclick="fillLast()">직전 값 불러오기</button>
         <button class="btn-ghost" onclick="resetSeed()">샘플 데이터로 초기화</button>
       </div>
-      <div class="hint">"직전 값 불러오기"로 마지막 기록을 채운 뒤 바뀐 항목만 수정하세요. 총자산을 비우면 항목 합계(부채 차감)로 자동 계산됩니다. 금액은 원 단위, 콤마 자동 표시.</div>
+      <div class="hint">"직전 값 불러오기"로 마지막 기록을 채운 뒤 바뀐 항목만 수정하세요. 총 자산은 항목 합계(자산−부채)로 자동 계산되며 수정할 수 없습니다. 금액은 원 단위, 콤마 자동 표시.</div>
     </div>
     <div class="panel">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px">
@@ -640,8 +640,8 @@ function renderAddForm(){
   const u=unitLabel();
   _addFormMap={};
   let h=`<div class="field"><label>기간 (예: 2026.06.25)</label><input id="nf_period"></div>`;
-  catOrder().forEach(i=>{const c=CATS[i]; _addFormMap[i]=c; h+=`<div class="field"><label>${signOf(c)<0?'− ':''}${c} (${u})</label><input inputmode="numeric" id="nf_${i}" oninput="fmtComma(this)"></div>`;});
-  h+=`<div class="field"><label>총 자산 (${u}, 선택)</label><input inputmode="numeric" id="nf_total" oninput="fmtComma(this)" placeholder="비우면 자동합산"></div>`;
+  catOrder().forEach(i=>{const c=CATS[i]; _addFormMap[i]=c; h+=`<div class="field"><label>${signOf(c)<0?'− ':''}${c} (${u})</label><input inputmode="numeric" id="nf_${i}" oninput="fmtComma(this);updateAddTotal()"></div>`;});
+  h+=`<div class="field"><label>총 자산 (${u}, 자동)</label><input id="nf_total" readonly title="자동 계산(수정 불가)" style="opacity:.85;cursor:not-allowed" placeholder="항목 입력 시 자동 합산"></div>`;
   f.innerHTML=h;
   if(saved){   // 이름 기준 복원
     const p=document.getElementById("nf_period"); if(p&&saved.period) p.value=saved.period;
@@ -649,11 +649,18 @@ function renderAddForm(){
     Object.keys(_addFormMap).forEach(i=>{ const nm=_addFormMap[i]; if(saved.byName[nm]!=null){ const el=document.getElementById("nf_"+i); if(el) el.value=saved.byName[nm]; } });
   }
 }
+// 항목 입력값 기준으로 총 자산 자동 계산 (사용자가 총자산 칸을 직접 입력 중이면 유지)
+function updateAddTotal(){
+  const te=document.getElementById("nf_total"); if(!te) return;
+  let sum=0;
+  Object.keys(_addFormMap).forEach(i=>{ const el=document.getElementById("nf_"+i); if(el) sum+=signOf(_addFormMap[i])*parseToWon(el.value); });
+  te.value=commaUnit(sum);
+}
 function fillLast(){
   if(data.length===0){ alert("불러올 직전 기록이 없습니다"); return; }
   const last=data[data.length-1];
   CATS.forEach((c,i)=>{ const el=document.getElementById("nf_"+i); if(el) el.value=commaUnit(last[c]||0); });
-  const t=document.getElementById("nf_total"); if(t) t.value=last["총 자산"]!=null?commaUnit(last["총 자산"]):"";
+  updateAddTotal();   // 불러온 항목 기준으로 총자산 재계산 (옛 총액 그대로 쓰지 않음)
   toast(`'${last.period}' 값을 불러왔습니다`);
 }
 function addRecord(){
@@ -661,8 +668,7 @@ function addRecord(){
   if(!p){alert("기간을 입력하세요");return;}
   const r={period:p};
   CATS.forEach((c,i)=>{const v=document.getElementById("nf_"+i).value; r[c]=v.trim()===""?0:parseToWon(v);});
-  const t=document.getElementById("nf_total").value;
-  r["총 자산"]= t.trim()===""? sumCats(r) : parseToWon(t);
+  r["총 자산"]= sumCats(r);   // 항목 합계(자산−부채)로 자동 계산
   data.push(r); save(); _clearAddForm=true; renderAll();   // 기록 추가 후에는 폼 비움
 }
 function renderEditTable(){
@@ -674,7 +680,7 @@ function renderEditTable(){
     h+=`<tr><td class="cP">${r.period}</td>`;
     h+=`<td class="cA"><button class="btn-danger" onclick="delRow(${i})">삭제</button></td>`;
     ord.forEach(ci=>{const c=CATS[ci];h+=`<td><input class="editcell" inputmode="numeric" value="${commaUnit(r[c]||0)}" oninput="fmtComma(this);liveCell(${i},${ci},this.value)"></td>`;});
-    h+=`<td><input class="editcell" id="tot_${i}" inputmode="numeric" value="${commaUnit(totalOf(r))}" oninput="fmtComma(this);liveTotal(${i},this.value)"></td></tr>`;
+    h+=`<td><input class="editcell" id="tot_${i}" readonly value="${commaUnit(totalOf(r))}" title="자동 계산(수정 불가)" style="opacity:.85;cursor:not-allowed"></td></tr>`;
   });
   h+="</tbody>";
   t.innerHTML=h;
@@ -684,11 +690,7 @@ function liveCharts(){ clearTimeout(_liveTmr); _liveTmr=setTimeout(()=>{renderOv
 function liveCell(i,ci,v){
   data[i][CATS[ci]] = v.trim()===""?0:parseToWon(v);
   const tot=sumCats(data[i]); data[i]["총 자산"]=tot;
-  const te=document.getElementById("tot_"+i); if(te && document.activeElement!==te) te.value=commaUnit(tot);
-  save(); renderKPIs(); liveCharts();
-}
-function liveTotal(i,v){
-  data[i]["총 자산"] = v.trim()===""?0:parseToWon(v);
+  const te=document.getElementById("tot_"+i); if(te) te.value=commaUnit(tot);   // 항목 수정 즉시 총자산 갱신
   save(); renderKPIs(); liveCharts();
 }
 function delRow(i){ if(confirm("이 기록을 삭제할까요?")){ data.splice(i,1); save(); renderAll(); } }
@@ -803,7 +805,13 @@ function toast(msg){
    ========================================================= */
 let db=null, auth=null, user=null;
 let applyingRemote=false, pendingRefresh=false;
-let subs=[], pfSubs=[], lastPushed={}, pushTmrs={};
+let subs=[], pfSubs=[], lastPushed={}, pushTmrs={}, dirty={};
+// 키 순서 무관 비교용 (Firestore 에코가 내 쓰기와 동일한지 정확히 판별)
+function stableStringify(o){
+  if(o===null||typeof o!=="object") return JSON.stringify(o);
+  if(Array.isArray(o)) return "["+o.map(stableStringify).join(",")+"]";
+  return "{"+Object.keys(o).sort().map(k=>JSON.stringify(k)+":"+stableStringify(o[k])).join(",")+"}";
+}
 
 function defaultBundle(){
   return { records: [],
@@ -878,7 +886,8 @@ function docRef(path){
   return db.collection("groups").doc(GID).collection("pf").doc(path.slice(3)); // "pf:uid"
 }
 function pushDoc(path,obj){
-  lastPushed[path]=JSON.stringify(obj);
+  lastPushed[path]=stableStringify(obj);
+  dirty[path]=true;   // 내 편집이 서버로 확정될 때까지 서버 값이 덮어쓰지 못하게 보호
   clearTimeout(pushTmrs[path]);
   pushTmrs[path]=setTimeout(()=>{ docRef(path).set(obj).catch(e=>toast("동기화 오류: "+(e.code||e.message))); },700);
 }
@@ -912,6 +921,8 @@ function subscribeGroup(){
   // 그룹 문서: 공동(목표·시뮬) 설정만. 멤버 구성은 하드코딩이라 저장 안 함.
   subs.push(db.collection("groups").doc(GID).onSnapshot(snap=>{
     const d=(snap.exists && snap.data()) || {};
+    if(stableStringify(d)===lastPushed["group"]){ dirty["group"]=false; }   // 내 쓰기 확정
+    else if(dirty["group"]) return;                                         // 내 미확정 편집 보호
     curGroup.sharedSettings = d.sharedSettings || {};
     TOPCATS = (Array.isArray(d.topCats) && d.topCats.length) ? d.topCats.slice() : DEFAULT_TOPCATS.slice();
     ITEMCAT = (d.itemCat && typeof d.itemCat==="object") ? d.itemCat : {};
@@ -923,10 +934,12 @@ function subscribePFDocs(){
   pfSubs.forEach(u=>{try{u();}catch(e){}}); pfSubs=[];
   memberUids().forEach(u=>{
     pfSubs.push(db.collection("groups").doc(GID).collection("pf").doc(u).onSnapshot(snap=>{
-      if(!snap.exists){ PFSRC[u]=defaultBundle(); if(u===myUid) db.collection("groups").doc(GID).collection("pf").doc(u).set(PFSRC[u]).catch(()=>{}); }
+      const key="pf:"+u;
+      if(!snap.exists){ if(dirty[key]) return; PFSRC[u]=defaultBundle(); if(u===myUid) db.collection("groups").doc(GID).collection("pf").doc(u).set(PFSRC[u]).catch(()=>{}); }
       else {
         const dt=snap.data();
-        if(JSON.stringify(dt)===lastPushed["pf:"+u]){ PFSRC[u]=dt; return; }
+        if(stableStringify(dt)===lastPushed[key]){ dirty[key]=false; PFSRC[u]=dt; return; }  // 내 쓰기 확정
+        if(dirty[key]) return;                                                                // 내 미확정 편집 보호
         PFSRC[u]=dt;
       }
       if(isEditing()){ pendingRefresh=true; return; }
